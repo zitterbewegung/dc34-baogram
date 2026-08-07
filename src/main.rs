@@ -338,6 +338,20 @@ fn main() -> ! {
         }
     }
 
+    // boot straight into the Baogram feed unless the intro tour is due;
+    // "Exit Baogram" in the post menu returns to the idle/vault side
+    if matches!(*mode.lock().unwrap(), VaultMode::Idle | VaultMode::IdleDevMode) {
+        {
+            let mut s = baogram.lock().unwrap();
+            s.feed.refresh(&pddb);
+            s.feed_cache = None;
+        }
+        *mode.lock().unwrap() = VaultMode::BaogramFeed;
+        animate.store(false, Ordering::SeqCst);
+        log::info!("starting in the Baogram feed");
+        vault_ui.redraw();
+    }
+
     let mut menu_active = false;
     let mut jig_ready_seen = false;
     let mut mutation_param: u8 = 0;

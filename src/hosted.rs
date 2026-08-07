@@ -38,21 +38,8 @@ fn key(conn: xous::CID, k: char, wait_ms: u64) {
 
 fn run_tour(conn: xous::CID) {
     let step = |m: &str| log::info!("BAOGRAM TOUR: {}", m);
+    // boot lands directly in the Baogram feed
     std::thread::sleep(std::time::Duration::from_secs(3));
-    step("opening idle menu");
-    key(conn, '∴', 2500);
-    // a key can be lost right after the menu opens; clamp the highlight to
-    // the top so the count below is absolute, not relative
-    step("clamping to top of menu");
-    for _ in 0..6 {
-        key(conn, '↑', 400);
-    }
-    step("down x3 to Baogram");
-    key(conn, '↓', 700);
-    key(conn, '↓', 700);
-    key(conn, '↓', 700);
-    step("selecting Baogram -> feed");
-    key(conn, '∴', 2500);
     step("camera preview (DC34 logo)");
     key(conn, '🔥', 4000);
     step("capture still");
@@ -61,6 +48,11 @@ fn run_tour(conn: xous::CID) {
     key(conn, '🔥', 3000);
     step("opening post menu");
     key(conn, '∴', 2500);
+    // a key can be lost right after a menu opens; clamp the highlight to
+    // the top (Share) before selecting
+    for _ in 0..3 {
+        key(conn, '↑', 400);
+    }
     step("selecting Share -> animated QR");
     key(conn, '∴', 8000);
     step("stopping share");
