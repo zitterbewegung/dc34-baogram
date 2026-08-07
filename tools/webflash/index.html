@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Baogram badge flasher</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { font: 15px/1.5 system-ui, sans-serif; background: #14161a; color: #dfe3e8;
+         max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; } h1 span { color: #7dc4ff; }
+  .card { background: #1c2027; border: 1px solid #2c323c; border-radius: 10px;
+          padding: 1rem 1.25rem; margin: 1rem 0; }
+  .warn { border-color: #a33; background: #221316; }
+  .warn h2 { color: #ff7a7a; margin-top: 0; font-size: 1.05rem; }
+  button { font: inherit; padding: .6rem 1.2rem; border-radius: 8px; border: 0;
+           background: #2f6feb; color: white; cursor: pointer; }
+  button:disabled { background: #3a3f47; color: #8b929c; cursor: not-allowed; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  td, th { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid #2c323c; }
+  code { color: #9ad1a8; }
+  #log { background: #101216; border-radius: 8px; padding: .75rem; height: 14rem;
+         overflow-y: auto; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+  #stepname { font-weight: 600; color: #7dc4ff; }
+  #donebox { display: none; color: #9ad1a8; font-weight: 600; }
+  label { display: flex; gap: .5rem; align-items: baseline; }
+  .muted { color: #8b929c; font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1><span>Baogram</span> badge flasher</h1>
+
+<div class="card warn">
+  <h2>Irreversible: this converts the badge to developer mode</h2>
+  <p>Installing a developer-signed image on a DC34 badge <strong>erases the
+  factory light-encryption key permanently</strong>. The conference
+  light-gene exchange with stock badges will no longer interoperate, and
+  neither you nor the project can restore the factory state. Archive the
+  official release first (see BAOGRAM_HARDWARE_TEST.md &sect;2).</p>
+  <label><input type="checkbox" id="ack">
+    I understand this permanently converts this badge to developer mode.
+  </label>
+</div>
+
+<div class="card">
+  <h2>Images</h2>
+  <table>
+    <thead><tr><th>file</th><th>size</th><th>UF2 blocks</th><th>sha256</th></tr></thead>
+    <tbody id="imgrows"><tr><td colspan="4" class="muted">loading…</td></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Flash</h2>
+  <p>Put the badge in update mode (see the README "Updates" section); it
+  mounts as a USB drive. Then, for each image below, click the button and
+  pick that drive. The badge reboots after each image &mdash; wait for the
+  drive to come back between steps.</p>
+  <p id="stepname">waiting for images…</p>
+  <p><button id="pick" disabled>Select the badge volume</button></p>
+  <p id="donebox">Flashing complete &mdash; power-cycle the badge. First boot
+  is slow (storage initialization), then it starts in the Baogram feed.</p>
+  <p class="muted">Requires a Chromium-based browser (File System Access
+  API). The browser cannot write to the badge without a click per image;
+  fully automatic flash-on-plug is not possible from a web page.</p>
+</div>
+
+<div class="card">
+  <h2>Log</h2>
+  <pre id="log"></pre>
+</div>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
+<script>
+const ack = document.getElementById("ack");
+const pick = document.getElementById("pick");
+let flashReady = false;
+
+function gate() { pick.disabled = !(flashReady && ack.checked); }
+ack.addEventListener("change", gate);
+
+async function main() {
+  const logEl = document.getElementById("log");
+  if (!window.showDirectoryPicker) {
+    logEl.textContent = "This browser lacks the File System Access API. " +
+      "Use Chrome or Edge, or copy the UF2 files onto the badge volume by hand.";
+    return;
+  }
+  logEl.textContent = "loading Pyodide…\n";
+  const pyodide = await loadPyodide();
+  const src = await (await fetch("flash.py")).text();
+  pyodide.FS.writeFile("flash.py", src);
+  await pyodide.runPythonAsync(src);
+  flashReady = await pyodide.runPythonAsync("await init()");
+  gate();
+
+  pick.addEventListener("click", async () => {
+    let handle;
+    try {
+      // must be called directly in the click handler to keep user activation
+      handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    } catch (e) {
+      return; // user cancelled the picker
+    }
+    pick.disabled = true;
+    try {
+      await pyodide.globals.get("on_volume_selected")(handle);
+    } finally {
+      gate();
+    }
+  });
+}
+main();
+</script>
+</body>
+</html>
