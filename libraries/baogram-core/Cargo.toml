@@ -1,0 +1,14 @@
+[package]
+name = "baogram-core"
+version = "0.1.0"
+edition = "2021"
+description = "Canonical post, fragment, image and crypto formats for Baogram. No Xous dependencies; compiles and tests natively on the host."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ed25519-compact = { version = "1", default-features = false, features = ["std"] }
+sha2 = { version = "0.10.8", default-features = false }
+base45 = "3.1.0"
+
+[dev-dependencies]
+hex = "0.4.3"
