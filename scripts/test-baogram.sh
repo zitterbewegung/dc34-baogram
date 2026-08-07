@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Run every host-runnable Baogram test suite:
+#   1. baogram-core (canonical formats + golden vectors)
+#   2. bao-video still-camera helpers (chunk math + synthetic-frame SHA)
+#   3. Python peer + Rust/Python interop (pytest, regenerates the
+#      python vectors), then baogram-core again to close the loop.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+vault_dir="$(cd "$here/.." && pwd)"
+ws="$(cd "$vault_dir/.." && pwd)"
+
+fail() { echo "error: $*" >&2; exit 1; }
+
+[ -d "$ws/xous-core" ] || fail "expected sibling checkout $ws/xous-core"
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+host_triple="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')" || fail "rustc not found"
+rustup_bin="$HOME/.rustup/toolchains/stable-$host_triple/bin"
+[ -d "$rustup_bin" ] && export PATH="$rustup_bin:$PATH"
+
+echo "===== [1/4] baogram-core ====="
+(cd "$vault_dir/libraries/baogram-core" && cargo test)
+
+echo "===== [2/4] bao-video still-camera helpers (hosted) ====="
+(cd "$ws/xous-core" && cargo test -p bao-video --features hosted-baosec,modals/hosted-baosec)
+
+echo "===== [3/4] baogram-host (Python peer + interop) ====="
+host_dir="$vault_dir/tools/baogram-host"
+if [ ! -x "$host_dir/.venv/bin/pytest" ]; then
+    echo "creating venv and installing baogram-host..."
+    python3 -m venv "$host_dir/.venv"
+    "$host_dir/.venv/bin/pip" -q install -e "$host_dir[test]"
+fi
+(cd "$host_dir" && .venv/bin/pytest -q)
+
+echo "===== [4/4] baogram-core again (consumes Python-generated vectors) ====="
+(cd "$vault_dir/libraries/baogram-core" && cargo test golden)
+
+echo
+echo "All Baogram host-side test suites passed."
