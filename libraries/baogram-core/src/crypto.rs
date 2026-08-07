@@ -102,7 +102,7 @@ pub fn post_digest(
 }
 
 /// Short hex fingerprint of a public key (first 8 bytes, 16 hex chars) for
-/// display and for the default `anon-` handle.
+/// display and for the default handle (its first 8 hex chars).
 pub fn hex_fingerprint(public_key: &[u8; PUBKEY_LEN]) -> String {
     public_key[..8].iter().map(|b| format!("{:02x}", b)).collect()
 }

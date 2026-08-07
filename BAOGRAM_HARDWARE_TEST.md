@@ -63,7 +63,7 @@ under the developer key.
    preview screen with the "fire:save left:retake" label within ~1 s.
 2. Retake (left) must restart the preview; capture again.
 3. Save (fire): returns to the feed showing the new post as 1/1 with
-   your `anon-XXXXXXXX` handle. **PASS =** photo visibly matches the
+   your `XXXXXXXX` (fingerprint-prefix) handle. **PASS =** photo visibly matches the
    scene at 128x120, save persists across a power cycle.
 
 ## 7. Frame SHA test (hosted equivalence)

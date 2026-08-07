@@ -19,6 +19,27 @@ use super::{BAOGRAM_DICT, KEY_IDENTITY};
 const IDENTITY_VERSION: u8 = 1;
 const IDENTITY_MAX_LEN: usize = 1 + 32 + 32 + 8 + 1 + HANDLE_MAX_BYTES;
 
+/// The default handle is `<username>-<num>`: `<username>` is the first entry
+/// in the vault's configured usernames list (falling back to "bao" when none
+/// is set), truncated so the whole handle fits the protocol's 24-byte cap,
+/// and `<num>` is the first 8 hex chars of the key fingerprint.
+fn default_handle(public_key: &[u8; 32]) -> String {
+    let num = &hex_fingerprint(public_key)[..8];
+    let mut name = String::from("bao");
+    if let Ok(file) = std::fs::File::open(crate::VAULT_CONFIG_USERNAMES) {
+        use std::io::BufRead;
+        if let Some(first) =
+            std::io::BufReader::new(file).lines().map_while(Result::ok).find(|l| !l.trim().is_empty())
+        {
+            name = first.trim().to_string();
+        }
+    }
+    while name.len() > HANDLE_MAX_BYTES - 1 - num.len() {
+        name.pop();
+    }
+    format!("{}-{}", name, num)
+}
+
 pub struct BaogramIdentity {
     seed: [u8; 32],
     pub public_key: [u8; 32],
@@ -31,13 +52,23 @@ impl BaogramIdentity {
     /// launch. The seed comes from `rand::thread_rng()`, which is backed by
     /// the hardware TRNG on the badge (via the Xous getrandom patch).
     pub fn load_or_create(pddb: &Pddb) -> BaogramIdentity {
-        if let Some(id) = Self::load(pddb) {
+        if let Some(mut id) = Self::load(pddb) {
+            // migrate retired default handles ("anon-<fp8>", bare "<fp8>") to
+            // the current default; user-chosen handles are left alone
+            let num = hex_fingerprint(&id.public_key)[..8].to_string();
+            let retired = [format!("anon-{}", num), num];
+            let current = default_handle(&id.public_key);
+            if id.handle != current && retired.contains(&id.handle) {
+                id.handle = current;
+                id.persist(pddb);
+                log::info!("baogram: migrated default handle to {}", id.handle);
+            }
             return id;
         }
         let mut seed = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut seed);
         let public_key = Identity::from_seed(&seed).public_key();
-        let handle = format!("anon-{}", &hex_fingerprint(&public_key)[..8]);
+        let handle = default_handle(&public_key);
         let id = BaogramIdentity { seed, public_key, seq: 0, handle };
         id.persist(pddb);
         log::info!("baogram: created new identity {}", id.fingerprint());
