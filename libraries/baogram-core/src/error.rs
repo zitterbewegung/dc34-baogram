@@ -85,7 +85,9 @@ pub enum BaogramError {
 }
 
 impl fmt::Display for BaogramError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{:?}", self) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl std::error::Error for BaogramError {}

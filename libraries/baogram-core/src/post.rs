@@ -130,14 +130,8 @@ impl Post {
         }
         let (codec_id, encoded_image) = codec::encode_best(image.packed());
         let author_pubkey = identity.public_key();
-        let header = canonical_header(
-            codec_id,
-            seq,
-            &author_pubkey,
-            handle.len(),
-            caption.len(),
-            encoded_image.len(),
-        );
+        let header =
+            canonical_header(codec_id, seq, &author_pubkey, handle.len(), caption.len(), encoded_image.len());
         let digest = crypto::post_digest(&header, handle.as_bytes(), caption.as_bytes(), &encoded_image);
         let signature = identity.sign_digest(&digest);
         Ok(Post {
@@ -248,10 +242,8 @@ impl Post {
         off += DIGEST_LEN;
         let signature: [u8; SIGNATURE_LEN] = bytes[off..off + SIGNATURE_LEN].try_into().unwrap();
 
-        let handle =
-            core::str::from_utf8(handle_bytes).map_err(|_| BaogramError::InvalidUtf8)?.to_string();
-        let caption =
-            core::str::from_utf8(caption_bytes).map_err(|_| BaogramError::InvalidUtf8)?.to_string();
+        let handle = core::str::from_utf8(handle_bytes).map_err(|_| BaogramError::InvalidUtf8)?.to_string();
+        let caption = core::str::from_utf8(caption_bytes).map_err(|_| BaogramError::InvalidUtf8)?.to_string();
 
         // recompute the digest over canonical regions
         let header = canonical_header(codec_id, seq, &author_pubkey, handle_len, caption_len, enc_len);
@@ -284,10 +276,14 @@ impl Post {
     }
 
     /// The 16-byte post ID (first 16 bytes of the digest).
-    pub fn post_id(&self) -> [u8; POST_ID_LEN] { self.digest[..POST_ID_LEN].try_into().unwrap() }
+    pub fn post_id(&self) -> [u8; POST_ID_LEN] {
+        self.digest[..POST_ID_LEN].try_into().unwrap()
+    }
 
     /// The 8-byte short post ID used in fragments.
-    pub fn short_id(&self) -> [u8; SHORT_ID_LEN] { self.digest[..SHORT_ID_LEN].try_into().unwrap() }
+    pub fn short_id(&self) -> [u8; SHORT_ID_LEN] {
+        self.digest[..SHORT_ID_LEN].try_into().unwrap()
+    }
 
     /// Total serialized length in bytes.
     pub fn serialized_len(&self) -> usize {
@@ -346,15 +342,9 @@ mod tests {
         let id = Identity::from_seed(&TEST_SEED);
         let img = test_image();
         assert!(Post::create(&id, 0, &"x".repeat(24), "", &img).is_ok());
-        assert_eq!(
-            Post::create(&id, 0, &"x".repeat(25), "", &img).unwrap_err(),
-            BaogramError::FieldTooLong
-        );
+        assert_eq!(Post::create(&id, 0, &"x".repeat(25), "", &img).unwrap_err(), BaogramError::FieldTooLong);
         assert!(Post::create(&id, 0, "", &"y".repeat(64), &img).is_ok());
-        assert_eq!(
-            Post::create(&id, 0, "", &"y".repeat(65), &img).unwrap_err(),
-            BaogramError::FieldTooLong
-        );
+        assert_eq!(Post::create(&id, 0, "", &"y".repeat(65), &img).unwrap_err(), BaogramError::FieldTooLong);
     }
 
     #[test]

@@ -285,10 +285,7 @@ mod tests {
     #[test]
     fn truncated_input_rejected() {
         // literal control byte promising 4 bytes, only 2 present
-        assert_eq!(
-            packbits_decode(&[3, 1, 2], 4).unwrap_err(),
-            BaogramError::CodecPrematureEnd
-        );
+        assert_eq!(packbits_decode(&[3, 1, 2], 4).unwrap_err(), BaogramError::CodecPrematureEnd);
         // run control byte with no value byte
         assert_eq!(packbits_decode(&[254], 3).unwrap_err(), BaogramError::CodecPrematureEnd);
         // empty input but nonzero expectation
@@ -303,24 +300,15 @@ mod tests {
     #[test]
     fn output_overflow_rejected() {
         // run of 128 into an expected length of 10
-        assert_eq!(
-            packbits_decode(&[129, 5], 10).unwrap_err(),
-            BaogramError::CodecOutputOverflow
-        );
+        assert_eq!(packbits_decode(&[129, 5], 10).unwrap_err(), BaogramError::CodecOutputOverflow);
         // literal of 4 into expected 2
-        assert_eq!(
-            packbits_decode(&[3, 1, 2, 3, 4], 2).unwrap_err(),
-            BaogramError::CodecOutputOverflow
-        );
+        assert_eq!(packbits_decode(&[3, 1, 2, 3, 4], 2).unwrap_err(), BaogramError::CodecOutputOverflow);
     }
 
     #[test]
     fn trailing_garbage_rejected() {
         // valid 3-byte run, then an extra block
-        assert_eq!(
-            packbits_decode(&[254, 7, 0, 1], 3).unwrap_err(),
-            BaogramError::CodecTrailingGarbage
-        );
+        assert_eq!(packbits_decode(&[254, 7, 0, 1], 3).unwrap_err(), BaogramError::CodecTrailingGarbage);
     }
 
     #[test]

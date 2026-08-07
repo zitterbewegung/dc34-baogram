@@ -33,7 +33,9 @@ fn vectors_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("test-vectors")
 }
 
-fn regen() -> bool { std::env::var("BAOGRAM_REGEN_VECTORS").as_deref() == Ok("1") }
+fn regen() -> bool {
+    std::env::var("BAOGRAM_REGEN_VECTORS").as_deref() == Ok("1")
+}
 
 /// Compare `bytes` against the committed file, or rewrite it in regen mode.
 fn check_or_write(name: &str, bytes: &[u8]) {
@@ -43,8 +45,9 @@ fn check_or_write(name: &str, bytes: &[u8]) {
         std::fs::write(&path, bytes).unwrap();
         eprintln!("wrote {} ({} bytes)", path.display(), bytes.len());
     } else {
-        let committed = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("missing golden vector {} ({e}); run with BAOGRAM_REGEN_VECTORS=1", path.display()));
+        let committed = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!("missing golden vector {} ({e}); run with BAOGRAM_REGEN_VECTORS=1", path.display())
+        });
         assert_eq!(committed, bytes, "golden vector {} drifted", name);
     }
 }
@@ -81,7 +84,10 @@ fn golden_valid_posts() {
     let pb_bytes = pb.serialize();
     check_or_write("valid-post-packbits.bgrm", &pb_bytes);
     let parsed = Post::parse(&pb_bytes).unwrap();
-    assert_eq!(parsed.decode_image().unwrap().packed()[..], Mono1Image::quantize(&synthetic_test_frame(), None).unwrap().packed()[..]);
+    assert_eq!(
+        parsed.decode_image().unwrap().packed()[..],
+        Mono1Image::quantize(&synthetic_test_frame(), None).unwrap().packed()[..]
+    );
 
     let raw = golden_post_raw();
     let raw_bytes = raw.serialize();
@@ -141,8 +147,7 @@ fn golden_fragments() {
     let frags = fragment_post(&post.short_id(), &bytes, FRAGMENT_CHUNK).unwrap();
 
     // all fragments, one Base45 line each
-    let all: String =
-        frags.iter().map(|f| f.to_base45()).collect::<Vec<_>>().join("\n");
+    let all: String = frags.iter().map(|f| f.to_base45()).collect::<Vec<_>>().join("\n");
     check_or_write("fragments-all.b45", all.as_bytes());
 
     // single valid fragment
@@ -168,10 +173,7 @@ fn golden_fragments() {
         order.swap(0, 7);
         order.swap(3, 11);
     }
-    let parsed: Vec<Fragment> = all
-        .lines()
-        .map(|l| Fragment::from_base45(l).unwrap())
-        .collect();
+    let parsed: Vec<Fragment> = all.lines().map(|l| Fragment::from_base45(l).unwrap()).collect();
     let (mut r, _) = Reassembler::new(&parsed[order[0]]).unwrap();
     for &i in &order[1..] {
         r.feed(&parsed[i]).unwrap();

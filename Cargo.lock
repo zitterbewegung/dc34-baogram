@@ -210,6 +210,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "baogram-core"
+version = "0.1.0"
+dependencies = [
+ "base45",
+ "ed25519-compact",
+ "sha2",
+]
+
+[[package]]
 name = "bare-metal"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -662,6 +671,7 @@ dependencies = [
  "bao1x-emu",
  "bao1x-hal",
  "bao1x-hal-service",
+ "baogram-core",
  "base32",
  "base45",
  "blitstr2",

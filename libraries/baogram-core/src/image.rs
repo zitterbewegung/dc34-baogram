@@ -42,7 +42,9 @@ impl Mono1Image {
     }
 
     /// The packed bytes, exactly MONO1_PACKED_LEN long.
-    pub fn packed(&self) -> &[u8; MONO1_PACKED_LEN] { &self.data }
+    pub fn packed(&self) -> &[u8; MONO1_PACKED_LEN] {
+        &self.data
+    }
 
     /// Read pixel (x, y); true = white.
     #[inline]
@@ -206,10 +208,7 @@ mod tests {
 
     #[test]
     fn quantize_rejects_wrong_size() {
-        assert_eq!(
-            Mono1Image::quantize(&[0u8; 100], None).unwrap_err(),
-            BaogramError::BadFrameSize
-        );
+        assert_eq!(Mono1Image::quantize(&[0u8; 100], None).unwrap_err(), BaogramError::BadFrameSize);
     }
 
     #[test]

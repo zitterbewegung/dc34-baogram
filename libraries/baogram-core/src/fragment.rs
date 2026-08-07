@@ -93,7 +93,9 @@ impl Fragment {
     }
 
     /// Base45 text for the QR layer.
-    pub fn to_base45(&self) -> String { base45::encode(&self.to_bytes()) }
+    pub fn to_base45(&self) -> String {
+        base45::encode(&self.to_bytes())
+    }
 
     /// Parse and validate a binary fragment.
     ///
@@ -188,8 +190,7 @@ pub fn fragment_post(
     serialized_post: &[u8],
     chunk_size: usize,
 ) -> Result<Vec<Fragment>> {
-    FragmentIter::new(short_post_id, serialized_post, chunk_size)
-        .map(|it| it.collect())
+    FragmentIter::new(short_post_id, serialized_post, chunk_size).map(|it| it.collect())
 }
 
 /// Lazy fragment generator: yields one fragment at a time so the sender
@@ -229,7 +230,9 @@ impl<'a> FragmentIter<'a> {
     }
 
     /// Total number of fragments this iterator will yield.
-    pub fn count_total(&self) -> usize { self.count }
+    pub fn count_total(&self) -> usize {
+        self.count
+    }
 
     /// Build the fragment at an arbitrary index (for looping displays).
     pub fn fragment_at(&self, index: usize) -> Option<Fragment> {
@@ -345,16 +348,24 @@ impl Reassembler {
     }
 
     /// Fragments received so far.
-    pub fn received_count(&self) -> usize { self.received_count }
+    pub fn received_count(&self) -> usize {
+        self.received_count
+    }
 
     /// Total fragments expected.
-    pub fn total_count(&self) -> usize { self.frag_count as usize }
+    pub fn total_count(&self) -> usize {
+        self.frag_count as usize
+    }
 
     /// The transfer's short post ID.
-    pub fn short_post_id(&self) -> [u8; SHORT_ID_LEN] { self.short_post_id }
+    pub fn short_post_id(&self) -> [u8; SHORT_ID_LEN] {
+        self.short_post_id
+    }
 
     /// True when every fragment has been received.
-    pub fn is_complete(&self) -> bool { self.received_count == self.frag_count as usize }
+    pub fn is_complete(&self) -> bool {
+        self.received_count == self.frag_count as usize
+    }
 
     /// Take the reassembled post bytes. Errors unless complete.
     pub fn into_bytes(self) -> Result<Vec<u8>> {
@@ -474,10 +485,7 @@ mod tests {
             chunk_size: 64,
             payload: test_payload(36),
         };
-        assert_eq!(
-            Fragment::from_bytes(&f.to_bytes()).unwrap_err(),
-            BaogramError::FragmentIndexOutOfRange
-        );
+        assert_eq!(Fragment::from_bytes(&f.to_bytes()).unwrap_err(), BaogramError::FragmentIndexOutOfRange);
 
         // payload length wrong for non-final fragment
         let f = Fragment {
@@ -488,10 +496,7 @@ mod tests {
             chunk_size: 64,
             payload: test_payload(63),
         };
-        assert_eq!(
-            Fragment::from_bytes(&f.to_bytes()).unwrap_err(),
-            BaogramError::FragmentPayloadLenInvalid
-        );
+        assert_eq!(Fragment::from_bytes(&f.to_bytes()).unwrap_err(), BaogramError::FragmentPayloadLenInvalid);
 
         // zero chunk size
         assert_eq!(

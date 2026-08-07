@@ -43,7 +43,9 @@ impl Identity {
     }
 
     /// The 32-byte public key.
-    pub fn public_key(&self) -> [u8; PUBKEY_LEN] { *self.keypair.pk }
+    pub fn public_key(&self) -> [u8; PUBKEY_LEN] {
+        *self.keypair.pk
+    }
 
     /// Sign a post digest (domain-separated). Ed25519 is deterministic, so
     /// no RNG is required.
@@ -56,7 +58,9 @@ impl Identity {
 
     /// Access the raw secret seed (for persistence by the identity store).
     /// Callers must never place this in a post, log, or QR code.
-    pub fn seed(&self) -> [u8; 32] { *self.keypair.sk.seed() }
+    pub fn seed(&self) -> [u8; 32] {
+        *self.keypair.sk.seed()
+    }
 }
 
 impl core::fmt::Debug for Identity {
