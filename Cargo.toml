@@ -21,6 +21,7 @@ subtle = { version = "2.5.0", features = ["core_hint_black_box"] }
 rand_core = "=0.6.4"
 ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.65" }
 backup = { path = "./libraries/backup", package = "backup-vault2" }
+baogram-core = { path = "./libraries/baogram-core" }
 dc34-api = { path = "../dc34-api" }
 
 # opensk
