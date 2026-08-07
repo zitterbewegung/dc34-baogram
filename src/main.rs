@@ -502,10 +502,15 @@ fn main() -> ! {
                             '\0' | '🔽' | '🔼' | '⏰' => false,
                             '🔥' => {
                                 let status = baogram::controller::save_pending(&baogram, &pddb);
+                                let saved = status == "saved" || status == "already in gallery";
                                 if status != "saved" {
                                     modals.show_notification(&status, None).ok();
                                 }
-                                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                                if saved {
+                                    *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                                }
+                                // on failure the pending post is kept and we
+                                // stay in Preview so the photo isn't lost
                                 vault_ui.redraw();
                                 true
                             }

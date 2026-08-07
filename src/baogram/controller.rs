@@ -32,26 +32,35 @@ pub fn init(pddb: &Pddb) -> Shared {
 }
 
 /// Sign (if locally captured) and persist the pending post. Returns a
-/// short status string for the UI.
+/// short status string for the UI. The pending post is only consumed on
+/// success (or duplicate), so a full gallery or a write error never
+/// discards the user's photo — they can delete a post and save again.
 pub fn save_pending(shared: &Shared, pddb: &Pddb) -> String {
     let mut s = shared.lock().unwrap();
+    // take() the pending post but restore it on failure paths below
     let Some(pending) = s.pending.take() else {
         return "nothing to save".to_string();
     };
     let (post_id, serialized) = match pending.source {
         PendingSource::Captured => {
-            let Some(image) = pending.image else {
+            let Some(image) = pending.image.as_ref() else {
                 return "internal error: no image".to_string();
             };
             let tt = ticktimer_server::Ticktimer::new().unwrap();
-            let seq = s.identity.next_seq(pddb);
+            // Note: the sequence number is consumed even if the save below
+            // fails; gaps in the sequence are harmless (it only needs to be
+            // monotonic).
             let handle = s.identity.handle.clone();
             let signer = s.identity.signer();
             let t0 = tt.elapsed_ms();
+            let seq = s.identity.next_seq(pddb);
             // caption is empty in the MVP capture flow
-            let post = match Post::create(&signer, seq, &handle, "", &image) {
+            let post = match Post::create(&signer, seq, &handle, "", image) {
                 Ok(p) => p,
-                Err(e) => return format!("sign failed: {:?}", e),
+                Err(e) => {
+                    s.pending = Some(pending);
+                    return format!("sign failed: {:?}", e);
+                }
             };
             let t1 = tt.elapsed_ms();
             let serialized = post.serialize();
@@ -66,10 +75,10 @@ pub fn save_pending(shared: &Shared, pddb: &Pddb) -> String {
             (post.post_id(), serialized)
         }
         PendingSource::Received => {
-            let Some((post, bytes)) = pending.post else {
+            let Some((post, bytes)) = pending.post.as_ref() else {
                 return "internal error: no post".to_string();
             };
-            (post.post_id(), bytes)
+            (post.post_id(), bytes.clone())
         }
     };
     let result = storage::save_post(pddb, &post_id, &serialized);
@@ -85,9 +94,13 @@ pub fn save_pending(shared: &Shared, pddb: &Pddb) -> String {
             "already in gallery".to_string()
         }
         SaveResult::GalleryFull => {
+            s.pending = Some(pending);
             format!("gallery full ({} posts) - delete one first", super::MAX_POSTS)
         }
-        SaveResult::Error => "save failed".to_string(),
+        SaveResult::Error => {
+            s.pending = Some(pending);
+            "save failed - post kept, try again".to_string()
+        }
     }
 }
 
