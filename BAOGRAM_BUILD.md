@@ -9,7 +9,7 @@ Cargo.toml):
 workspace/
 ├── dc34-api/       main @ 617f0f3   (unchanged)
 ├── dc34-console/   main @ bf64e03   (unchanged)
-├── dc34-vault/     branch feature/baogram-app        (base 3d5cbf7)
+├── dc34-baogram/     branch feature/baogram-app        (base 3d5cbf7)
 └── xous-core/      branch feature/baogram-camera-api (base 5d5bbbf, dev of 2026-08-03)
 ```
 
@@ -45,7 +45,7 @@ cargo xtask install-toolkit
 
 ## Build everything
 
-`scripts/build-baogram.sh` in dc34-vault performs the sequence below and
+`scripts/build-baogram.sh` in dc34-baogram performs the sequence below and
 verifies the directory layout first.
 
 ```sh
@@ -56,7 +56,7 @@ cargo build --release --target riscv32imac-unknown-xous-elf \
   --features bao1x --features utralib/bao1x
 
 # vault + Baogram
-cd ../dc34-vault
+cd ../dc34-baogram
 cargo build --release --target riscv32imac-unknown-xous-elf \
   --features board-baosec
 
@@ -64,7 +64,7 @@ cargo build --release --target riscv32imac-unknown-xous-elf \
 cd ../xous-core
 cargo xtask baosec-lite \
   ../dc34-console/target/riscv32imac-unknown-xous-elf/release/dc34-console~flash \
-  ../dc34-vault/target/riscv32imac-unknown-xous-elf/release/dc34-vault \
+  ../dc34-baogram/target/riscv32imac-unknown-xous-elf/release/dc34-vault \
   --no-timestamp --feature usb --kernel-feature debug-proc --no-verify
 ```
 
@@ -77,13 +77,13 @@ Products: `xous-core/target/riscv32imac-unknown-xous-elf/release/`
 
 ```sh
 # canonical formats (host-native, includes golden vectors)
-cd dc34-vault/libraries/baogram-core && cargo test
+cd dc34-baogram/libraries/baogram-core && cargo test
 
 # camera chunk math + hosted synthetic frame golden SHA
 cd xous-core && cargo test -p bao-video --features hosted-baosec,modals/hosted-baosec
 
 # Python peer + Rust/Python interop (creates .venv on first run)
-cd dc34-vault/tools/baogram-host
+cd dc34-baogram/tools/baogram-host
 python3 -m venv .venv && .venv/bin/pip install -e '.[test]'
 .venv/bin/pytest
 ```

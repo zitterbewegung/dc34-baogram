@@ -48,19 +48,19 @@ and every claim below is explicit about being host/build-level evidence.
 3. **During receive/preview, the display belongs to bao-video**; the
    vault's transfer progress is shown via the generic
    `QrStreamSetStatus` overlay ("Baogram k/n").
-4. **Hosted full-app run** (fixed 2026-08-07): dc34-vault now builds
+4. **Hosted full-app run** (fixed 2026-08-07): dc34-baogram now builds
    with `--features hosted-baosec` (the utralib build-script failure
    was caused by the unconditional `bao1x-hal` board features in
    Cargo.toml, plus missing hosted features on keystore/pddb/modals
    and a stale unpatched `bao1x-emu` git pin). Run the full app hosted
    with
-   `cargo xtask baosec-emu ../dc34-vault/target/release/dc34-vault`
+   `cargo xtask baosec-emu ../dc34-baogram/target/release/dc34-vault`
    (xtask drops the stock vault2 when an app binary is given). Hosted
    stand-ins: power/LED servers are absorbed by stub threads
    (`src/hosted.rs`, reports VBUS present), battery reads 4200 mV,
    bitmap-diffusion renders instantly without the dissolve animation,
    and the camera serves the deterministic synthetic frame.
-5. `cargo fmt` note: xous-core and dc34-vault use rustfmt.toml options
+5. `cargo fmt` note: xous-core and dc34-baogram use rustfmt.toml options
    that are unstable on stable rustfmt; upstream files are formatted
    with nightly rustfmt and stable `cargo fmt --check` fails repo-wide
    even without Baogram. All Baogram-authored files are formatted; no

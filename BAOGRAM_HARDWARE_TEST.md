@@ -27,7 +27,7 @@ under the developer key.
 ## 3. Identify the USB device
 
 1. Detach the core module (or use the badge whole) and connect via USB-C.
-2. Put the badge into update mode per the dc34-vault README ("Updates"
+2. Put the badge into update mode per the dc34-baogram README ("Updates"
    section): the badge enumerates as a mass-storage device (UF2
    bootloader).
 3. On macOS it mounts as a volume (check `diskutil list` /

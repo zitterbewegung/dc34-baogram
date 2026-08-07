@@ -17,7 +17,7 @@ Assumes the following directory structure:
  .
  ├── dc34-api
  ├── dc34-console
- ├── dc34-vault
+ ├── dc34-baogram
  └── xous-core
 ```
 
@@ -38,14 +38,14 @@ echo "===== Building Console ====="
 
 echo "===== Building Vault ====="
 (
-    cd ../dc34-vault &&
+    cd ../dc34-baogram &&
     cargo build --release --target riscv32imac-unknown-xous-elf --features board-baosec &&
 ) || {
-    echo "dc34-vault build failed!"
+    echo "dc34-baogram build failed!"
     exit 1
 }
 
-cargo xtask baosec-lite ../dc34-console/target/riscv32imac-unknown-xous-elf/release/dc34-console~flash ../dc34-vault/target/riscv32imac-unknown-xous-elf/release/dc34-vault \
+cargo xtask baosec-lite ../dc34-console/target/riscv32imac-unknown-xous-elf/release/dc34-console~flash ../dc34-baogram/target/riscv32imac-unknown-xous-elf/release/dc34-vault \
     --no-timestamp --feature usb --kernel-feature debug-proc --no-verify
 ```
 

@@ -10,7 +10,7 @@ ws="$(cd "$vault_dir/.." && pwd)"
 fail() { echo "error: $*" >&2; exit 1; }
 
 # --- layout checks -----------------------------------------------------
-for repo in dc34-api dc34-console dc34-vault xous-core; do
+for repo in dc34-api dc34-console dc34-baogram xous-core; do
     [ -d "$ws/$repo" ] || fail "expected sibling checkout $ws/$repo (see BAOGRAM_BUILD.md)"
 done
 [ -f "$ws/xous-core/xtask/src/main.rs" ] || fail "$ws/xous-core does not look like xous-core"
@@ -46,14 +46,14 @@ echo "===== Building Console ====="
     --features bao1x --features utralib/bao1x)
 
 echo "===== Building Vault (with Baogram) ====="
-(cd "$ws/dc34-vault" && cargo build \
+(cd "$ws/dc34-baogram" && cargo build \
     --release --target riscv32imac-unknown-xous-elf \
     --features board-baosec)
 
 echo "===== Packaging baosec-lite image ====="
 (cd "$ws/xous-core" && cargo xtask baosec-lite \
     ../dc34-console/target/riscv32imac-unknown-xous-elf/release/dc34-console~flash \
-    ../dc34-vault/target/riscv32imac-unknown-xous-elf/release/dc34-vault \
+    ../dc34-baogram/target/riscv32imac-unknown-xous-elf/release/dc34-vault \
     --no-timestamp --feature usb --kernel-feature debug-proc --no-verify)
 
 out="$ws/xous-core/target/riscv32imac-unknown-xous-elf/release"

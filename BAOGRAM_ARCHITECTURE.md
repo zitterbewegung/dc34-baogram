@@ -12,7 +12,7 @@
 │  └─ QrStream*        (new generic continuous QR decode API)          │
 │           ▲  rkyv IPC (GfxOpcode, appended after Quit)               │
 │           │                                                          │
-│  dc34-vault ("_Vault2_")                                             │
+│  dc34-baogram ("_Vault2_")                                             │
 │  ├─ src/baogram/     identity · storage · camera · feed ·           │
 │  │                   transfer · render · controller                  │
 │  ├─ VaultMode::Baogram{Feed,Camera,Preview,PostMenu,Share,Receive,   │
@@ -40,7 +40,7 @@
 * **baogram-core is pure.** Formats, codec, crypto, reassembly: no Xous,
   camera, display, or PDDB dependencies; tests run host-native and pin
   golden vectors shared with the Python peer.
-* **dc34-vault owns all Baogram semantics**: rendering (2x downsample to
+* **dc34-baogram owns all Baogram semantics**: rendering (2x downsample to
   the 128x128 OLED), storage conventions, UI flow.
 
 ## Camera data path (capture)
