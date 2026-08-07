@@ -81,6 +81,8 @@ pub(crate) enum VaultOp {
     BaogramExitOp,
     /// Receive worker -> main: session ended (arg0: RX_DONE_* code).
     BaogramRxDone,
+    /// Baogram post menu: show the About screen (what the app does + keys).
+    BaogramAboutOp,
 
     // monkey patch for last-minute custom image feature - discriminant is hard-coded into dc34-console
     ImageLoad = 1024,

@@ -1,6 +1,6 @@
 # Baogram status
 
-Last updated: 2026-08-06 (end of the initial implementation pass).
+Last updated: 2026-08-07 (hosted full-app emulation added).
 
 ## Summary
 
@@ -48,19 +48,26 @@ and every claim below is explicit about being host/build-level evidence.
 3. **During receive/preview, the display belongs to bao-video**; the
    vault's transfer progress is shown via the generic
    `QrStreamSetStatus` overlay ("Baogram k/n").
-4. **Hosted full-app run**: `cargo xtask baosec-emu` boots xous-core's
-   own vault2, not dc34-vault; running dc34-vault hosted end-to-end
-   would need a custom service list (and `cargo check --features
-   hosted-baosec` in dc34-vault fails inside utralib's build script —
-   a pre-existing condition unrelated to Baogram). Hosted coverage is
-   therefore at the unit/IPC-helper level, not full-app.
+4. **Hosted full-app run** (fixed 2026-08-07): dc34-vault now builds
+   with `--features hosted-baosec` (the utralib build-script failure
+   was caused by the unconditional `bao1x-hal` board features in
+   Cargo.toml, plus missing hosted features on keystore/pddb/modals
+   and a stale unpatched `bao1x-emu` git pin). Run the full app hosted
+   with
+   `cargo xtask baosec-emu ../dc34-vault/target/release/dc34-vault`
+   (xtask drops the stock vault2 when an app binary is given). Hosted
+   stand-ins: power/LED servers are absorbed by stub threads
+   (`src/hosted.rs`, reports VBUS present), battery reads 4200 mV,
+   bitmap-diffusion renders instantly without the dissolve animation,
+   and the camera serves the deterministic synthetic frame.
 5. `cargo fmt` note: xous-core and dc34-vault use rustfmt.toml options
    that are unstable on stable rustfmt; upstream files are formatted
    with nightly rustfmt and stable `cargo fmt --check` fails repo-wide
    even without Baogram. All Baogram-authored files are formatted; no
    unrelated file was reformatted.
 6. Handle editing UI is not wired (the identity module supports it;
-   default handles are `anon-<fingerprint>`); captions are empty in the
+   default handles are `<vault username|bao>-<first 8 hex chars of the
+   key fingerprint>`); captions are empty in the
    badge capture flow (the laptop peer supports both).
 7. The share loop's QR is regenerated on the 250 ms UI pump, so
    effective frame periods quantize to multiples of 250 ms.

@@ -28,6 +28,13 @@ pub fn create_submenu(vault_conn: xous::CID, _actions_conn: xous::CID, menu_mgr:
         close_on_select: true,
     });
     menu_items.push(MenuItem {
+        name: String::from("About"),
+        action_conn: Some(vault_conn),
+        action_opcode: VaultOp::BaogramAboutOp.to_u32().unwrap(),
+        action_payload: MenuPayload::Scalar([0, 0, 0, 0]),
+        close_on_select: true,
+    });
+    menu_items.push(MenuItem {
         name: String::from("Back"),
         action_conn: Some(vault_conn),
         action_opcode: VaultOp::BaogramBackOp.to_u32().unwrap(),

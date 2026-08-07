@@ -21,6 +21,8 @@ mod config;
 mod fido2;
 mod genemenu;
 mod generator;
+#[cfg(feature = "hosted-baosec")]
+mod hosted;
 mod idlemenu;
 mod tests;
 mod vendor_commands;
@@ -129,6 +131,9 @@ fn main() -> ! {
     let xns = xous_names::XousNames::new().unwrap();
     let sid = xns.register_name(SERVER_NAME_VAULT2, None).expect("can't register server");
     let conn = xous::connect(sid).unwrap();
+
+    #[cfg(feature = "hosted-baosec")]
+    hosted::spawn_console_stubs();
 
     log::info!("logo");
     let gfx = Gfx::new(&xns).unwrap();
@@ -268,6 +273,9 @@ fn main() -> ! {
     // this message is needed as a CI trigger
     log::info!("{}FIDO.READY,{}", bao1x_hal::board::BOOKEND_START, bao1x_hal::board::BOOKEND_END);
 
+    #[cfg(feature = "hosted-baosec")]
+    hosted::spawn_tour_if_requested(conn);
+
     // "warm up" the first menu manger to reduce UI latency using a dummy key press
     // the purpose of this dry run is to get all the UI code wired into main memory
     // instead of hanging out in swap.
@@ -279,6 +287,7 @@ fn main() -> ! {
     // gfx.flush().ok(); // i don't think this is necessary
     gfx.dry_run(false).ok();
 
+    #[cfg(not(feature = "hosted-baosec"))]
     {
         // check/trigger swap encryption before starting the main loop
         let xns = xous_names::XousNames::new().unwrap();
@@ -1222,6 +1231,25 @@ fn main() -> ! {
             Some(VaultOp::BaogramAuthorOp) => {
                 let info = baogram::controller::current_author_info(&baogram, &pddb);
                 modals.show_notification(&info, None).ok();
+                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                vault_ui.redraw();
+            }
+            Some(VaultOp::BaogramAboutOp) => {
+                modals
+                    .show_notification(
+                        "~Baogram~\n\
+                         Offline photo sharing,\n\
+                         signed with Ed25519.\n\
+                         Posts travel between\n\
+                         badges as animated QR.\n\
+                         \n\
+                         🔥 shoot a photo\n\
+                         ↑↓ browse the feed\n\
+                         ← receive from a badge\n\
+                         ∴ share / author / delete",
+                        None,
+                    )
+                    .ok();
                 *mode.lock().unwrap() = VaultMode::BaogramFeed;
                 vault_ui.redraw();
             }

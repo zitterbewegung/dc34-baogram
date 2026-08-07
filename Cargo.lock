@@ -134,7 +134,6 @@ dependencies = [
 [[package]]
 name = "bao1x-emu"
 version = "0.1.0"
-source = "git+https://github.com/betrusted-io/xous-core?rev=616bf65f6e379165464f50b1e79ec42aff77a683#616bf65f6e379165464f50b1e79ec42aff77a683"
 dependencies = [
  "bao1x-api",
  "log",
@@ -1369,6 +1368,7 @@ dependencies = [
 name = "keystore"
 version = "0.1.0"
 dependencies = [
+ "aes 0.8.4",
  "aes-gcm-siv",
  "aes-kw",
  "bao1x-api",
@@ -1384,6 +1384,7 @@ dependencies = [
  "keystore-api",
  "locales 0.1.0",
  "log",
+ "modals",
  "num-derive",
  "num-traits",
  "rand",
@@ -1598,6 +1599,7 @@ name = "modals"
 version = "0.1.0"
 dependencies = [
  "bao1x-api",
+ "bao1x-emu",
  "bao1x-hal-service",
  "bit_field",
  "blitstr2",
@@ -1809,6 +1811,7 @@ version = "0.1.0"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm-siv",
+ "bao1x-emu",
  "bao1x-hal",
  "bao1x-hal-service",
  "bitfield",

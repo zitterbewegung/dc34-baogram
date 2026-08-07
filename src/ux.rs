@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "board-baosec")]
 use bao1x_hal_service::Adc;
 use blitstr2::GlyphStyle;
 use chrono::Datelike;
@@ -528,6 +529,7 @@ pub struct VaultUi {
     pub qr_override: Option<QrCode>,
 
     // adc for reading battery level
+    #[cfg(feature = "board-baosec")]
     adc: Adc,
     batt_polled: bool,
     low_batt_since: Option<Instant>,
@@ -543,6 +545,18 @@ pub struct VaultUi {
 }
 
 impl VaultUi {
+    #[cfg(feature = "board-baosec")]
+    fn read_vbat_mv(&mut self) -> u32 {
+        let voltage_code = self
+            .adc
+            .read_raw(bao1x_hal::udma::AdcSource::Ext(bao1x_hal::udma::AdcExtChannel::Adc3), Some(8));
+        ((bao1x_hal::udma::Adc::raw_to_voltage(voltage_code) * 1000.0f32) / 0.318f32) as u32
+    }
+
+    // no ADC in hosted mode; report a healthy battery
+    #[cfg(feature = "hosted-baosec")]
+    fn read_vbat_mv(&mut self) -> u32 { 4200 }
+
     pub fn new(
         xns: &xous_names::XousNames,
         cid: xous::CID,
@@ -596,6 +610,7 @@ impl VaultUi {
             token_help_state: TokenHelpState::TokenRecap { seen_press: false },
             global_config: None,
             qr_override: None,
+            #[cfg(feature = "board-baosec")]
             adc: Adc::new(),
             batt_polled: false,
             low_batt_since: None,
@@ -800,6 +815,19 @@ impl VaultUi {
                     self.gfx.bitmap(&bitmaps::dc_logo::BITMAP, None, None).ok();
                 }
 
+                // first-screen key guide: everything is reachable from the ∴ menu,
+                // and 🔥 scans a QR code from here
+                let mut hint = TextView::new(
+                    Gid::dummy(),
+                    TextBounds::CenteredTop(Rectangle::new(Point::new(0, 0), Point::new(127, 14))),
+                );
+                hint.invert = true;
+                hint.margin = Point::new(1, 1);
+                hint.style = GlyphStyle::Bold;
+                hint.draw_border = false;
+                write!(hint, "∴ menu  🔥 QR").ok();
+                self.gfx.draw_textview(&mut hint).ok();
+
                 // flag a badge mismatch, mostly for diagnostics at the factory & at the show
                 let mut tv = TextView::new(
                     Gid::dummy(),
@@ -830,12 +858,7 @@ impl VaultUi {
                     && (now / 1000) % 4 == 0
                     && !self.global_config.as_ref().unwrap().lock().unwrap().is_plugged_in()
                 {
-                    let voltage_code = self.adc.read_raw(
-                        bao1x_hal::udma::AdcSource::Ext(bao1x_hal::udma::AdcExtChannel::Adc3),
-                        Some(8),
-                    );
-                    let vbat_mv =
-                        ((bao1x_hal::udma::Adc::raw_to_voltage(voltage_code) * 1000.0f32) / 0.318f32) as u32;
+                    let vbat_mv = self.read_vbat_mv();
                     if vbat_mv < LOWBATT_THRESH_MV {
                         self.gfx.bitmap(&bitmaps::lowbatt::BITMAP, None, None).ok();
                         let mut msg = TextView::new(
@@ -1365,12 +1388,7 @@ impl VaultUi {
                         Gid::dummy(),
                         TextBounds::CenteredTop(Rectangle::new(Point::new(0, 0), Point::new(128, 128))),
                     );
-                    let voltage_code = self.adc.read_raw(
-                        bao1x_hal::udma::AdcSource::Ext(bao1x_hal::udma::AdcExtChannel::Adc3),
-                        Some(8),
-                    );
-                    let vbat_mv =
-                        ((bao1x_hal::udma::Adc::raw_to_voltage(voltage_code) * 1000.0f32) / 0.318f32) as u32;
+                    let vbat_mv = self.read_vbat_mv();
                     writeln!(msg, "~Meditations~").ok();
                     // batt level
                     writeln!(msg, "Batt: {} mV", vbat_mv).ok();
@@ -1493,8 +1511,7 @@ impl VaultUi {
             );
             tv.style = GlyphStyle::Regular;
             tv.draw_border = false;
-            write!(tv, "Baogram\n\nNo posts yet.\n\nfire: camera\nleft: receive\nright: profile\n:.: menu")
-                .ok();
+            write!(tv, "Baogram\n\nNo posts yet.\n\n🔥 camera\n← receive\n→ profile\n∴ menu").ok();
             self.gfx.draw_textview(&mut tv).ok();
             return;
         }
@@ -1570,7 +1587,7 @@ impl VaultUi {
                 let img = pending.image.as_ref().expect("captured pending must hold an image");
                 (
                     crate::baogram::render::mono1_to_display_bitmap(img),
-                    "fire:save left:retake".to_string(),
+                    "🔥 save   ← retake".to_string(),
                 )
             }
             crate::baogram::PendingSource::Received => {
@@ -1580,7 +1597,7 @@ impl VaultUi {
                         let who = if post.handle.is_empty() { "anon" } else { &post.handle };
                         (
                             crate::baogram::render::mono1_to_display_bitmap(&img),
-                            format!("{}: fire:save", who),
+                            format!("{}  🔥 save", who),
                         )
                     }
                     Err(_) => (crate::baogram::render::corrupt_placeholder(), "undecodable".to_string()),

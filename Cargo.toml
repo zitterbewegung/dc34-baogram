@@ -39,7 +39,7 @@ modals = { git = "https://github.com/betrusted-io/xous-core", rev = "616bf65f6e3
 userprefs = { git = "https://github.com/betrusted-io/xous-core", rev = "616bf65f6e379165464f50b1e79ec42aff77a683" }
 ux-api = { git = "https://github.com/betrusted-io/xous-core", rev = "616bf65f6e379165464f50b1e79ec42aff77a683" }
 bao1x-api = { git = "https://github.com/betrusted-io/xous-core", rev = "616bf65f6e379165464f50b1e79ec42aff77a683" }
-bao1x-hal = { git = "https://github.com/betrusted-io/xous-core", rev = "616bf65f6e379165464f50b1e79ec42aff77a683", features = ["board-baosec", "oem-baosec-lite"] }
+bao1x-hal = { git = "https://github.com/betrusted-io/xous-core", rev = "616bf65f6e379165464f50b1e79ec42aff77a683" }
 bao1x-hal-service = { git = "https://github.com/betrusted-io/xous-core", rev = "616bf65f6e379165464f50b1e79ec42aff77a683", optional = true }
 bao1x-emu = { git = "https://github.com/betrusted-io/xous-core", rev = "616bf65f6e379165464f50b1e79ec42aff77a683", optional = true }
 blitstr2 = { git = "https://github.com/betrusted-io/xous-core", rev = "616bf65f6e379165464f50b1e79ec42aff77a683", features = [
@@ -103,6 +103,7 @@ opt-level = "s" # z,s: Optimize for size instead of performance; 1 for easier de
 enum-iterator = "0.6.0"
 
 [patch."https://github.com/betrusted-io/xous-core"]
+bao1x-emu = { path = "../xous-core/services/bao1x-emu" }
 bao1x-hal = { path = "../xous-core/libs/bao1x-hal" }
 bao1x-hal-service = { path = "../xous-core/services/bao1x-hal-service" }
 bao1x-api = { path = "../xous-core/libs/bao1x-api" }
@@ -120,6 +121,8 @@ keystore = { path = "../xous-core/services/keystore" }
 production = []
 board-baosec = [
     "bao1x-hal-service",
+    "bao1x-hal/board-baosec",
+    "bao1x-hal/oem-baosec-lite",
     "ux-api/board-baosec",
     "ux-api/bip39entry",
     "blitstr2/board-baosec",
@@ -129,6 +132,11 @@ board-baosec = [
 ]
 hosted-baosec = [
     "bao1x-emu",
+    "bao1x-emu/hosted-baosec",
+    "pddb/hosted-baosec",
+    "bao1x-hal/hosted-baosec",
+    "modals/hosted-baosec",
+    "keystore/hosted-baosec",
     "ux-api/bip39entry",
     "ux-api/hosted-baosec",
     "usb-bao1x/hosted-baosec",
