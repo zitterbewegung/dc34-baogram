@@ -65,6 +65,23 @@ pub(crate) enum VaultOp {
     HandleQr,
     AbortQr,
 
+    // Baogram: appended after all pre-existing variants (and kept below the
+    // hard-coded 1024 monkey-patch block) so no existing discriminant moves.
+    /// Enter the Baogram feed (from the idle menu).
+    BaogramEnter,
+    /// Baogram post menu: share the current post as animated QR.
+    BaogramShareOp,
+    /// Baogram post menu: delete the current post.
+    BaogramDeleteOp,
+    /// Baogram post menu: show the current post's author fingerprint.
+    BaogramAuthorOp,
+    /// Baogram post menu: back to the feed.
+    BaogramBackOp,
+    /// Baogram post menu: leave Baogram for the idle screen.
+    BaogramExitOp,
+    /// Receive worker -> main: session ended (arg0: RX_DONE_* code).
+    BaogramRxDone,
+
     // monkey patch for last-minute custom image feature - discriminant is hard-coded into dc34-console
     ImageLoad = 1024,
     // monkey patch to force jig mode, for re-tested units in the factory

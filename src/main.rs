@@ -14,6 +14,8 @@ pub mod vault_api;
 use ux_api::service::gfx::Gfx;
 pub use vault_api::*;
 mod action_handler;
+mod baogram;
+mod baogrammenu;
 mod bitmaps;
 mod config;
 mod fido2;
@@ -70,6 +72,22 @@ pub enum VaultMode {
     Totp,
     Password,
     TokenHelp,
+    // Baogram modes: appended after all pre-existing variants so archived
+    // (rkyv) values keep their discriminants.
+    /// Browse the local post gallery.
+    BaogramFeed,
+    /// Live camera preview (bao-video owns the display).
+    BaogramCamera,
+    /// Review a captured or received post before saving.
+    BaogramPreview,
+    /// The Baogram post menu (Share/Delete/Author/Back/Exit) is raised.
+    BaogramPostMenu,
+    /// Animated QR share loop.
+    BaogramShare { quantum: u32 },
+    /// Continuous QR receive (bao-video owns the display).
+    BaogramReceive,
+    /// Identity summary screen.
+    BaogramProfile,
 }
 
 impl VaultMode {
@@ -90,6 +108,14 @@ impl VaultMode {
             VaultMode::ShowKey { quantum: _ } => true,
             VaultMode::TokenTour => false,
             VaultMode::Tour => false,
+            VaultMode::BaogramFeed => false,
+            VaultMode::BaogramCamera => false,
+            VaultMode::BaogramPreview => false,
+            VaultMode::BaogramPostMenu => false,
+            // the pump advances the animated QR loop
+            VaultMode::BaogramShare { quantum: _ } => true,
+            VaultMode::BaogramReceive => false,
+            VaultMode::BaogramProfile => false,
         }
     }
 }
@@ -148,6 +174,8 @@ fn main() -> ! {
     let gene_menu_mgr = genemenu::create_submenu(conn, actions_conn, gene_menu_sid);
     let idle_menu_sid = xous::create_server().unwrap();
     let idle_menu_mgr = idlemenu::create_submenu(conn, actions_conn, idle_menu_sid);
+    let baogram_menu_sid = xous::create_server().unwrap();
+    let baogram_menu_mgr = baogrammenu::create_submenu(conn, actions_conn, baogram_menu_sid);
 
     let modals = modals::Modals::new(&xns).unwrap();
 
@@ -190,6 +218,10 @@ fn main() -> ! {
     let global_config = Arc::new(Mutex::new(global_config));
     *mode.lock().unwrap() = init_mode;
     vault_ui.set_global_config(global_config.clone());
+
+    log::info!("Baogram init");
+    let baogram = baogram::controller::init(&pddb);
+    vault_ui.set_baogram(baogram.clone());
 
     log::info!("Fido2 service");
     fido2::fido2_handler(conn, allow_host.clone(), opensk_mutex.clone(), animate.clone());
@@ -338,6 +370,14 @@ fn main() -> ! {
             }
             Some(VaultOp::MenuDone) => {
                 menu_active = false;
+                // if the Baogram post menu closed without a selection, fall
+                // back to the feed (selections set their own mode first)
+                {
+                    let mut m = mode.lock().unwrap();
+                    if matches!(*m, VaultMode::BaogramPostMenu) {
+                        *m = VaultMode::BaogramFeed;
+                    }
+                }
                 // update the TOTP codes, in case there were changes
                 vault_ui.refresh_draw_list();
                 animate.store(mode.lock().unwrap().should_animate(), Ordering::SeqCst);
@@ -379,6 +419,8 @@ fn main() -> ! {
                         tour_menu_mgr.key_press(k);
                     } else if matches!(mode_now, VaultMode::ConfirmGene) {
                         gene_menu_mgr.key_press(k);
+                    } else if matches!(mode_now, VaultMode::BaogramPostMenu) {
+                        baogram_menu_mgr.key_press(k);
                     } else if matches!(mode_now, VaultMode::Idle)
                         || matches!(mode_now, VaultMode::IdleDevMode)
                     {
@@ -391,6 +433,155 @@ fn main() -> ! {
                     // by various test routines
                     let k = vault_ui.handle_key(k);
 
+                    // Baogram key actions that need main-loop resources
+                    // (camera driving, workers, PDDB). Dispatch on the mode
+                    // captured before handle_key so navigation-only keys
+                    // (already consumed there) fall through cleanly.
+                    let kc = k.unwrap_or('\0');
+                    let baogram_handled = match mode_now {
+                        VaultMode::BaogramFeed => match kc {
+                            '🔥' => {
+                                // open the camera for a capture
+                                global_config.lock().unwrap().pause_accel(true);
+                                vault_ui.camera_transition();
+                                match baogram::camera::preview_start(&gfx) {
+                                    Ok(()) => {
+                                        *mode.lock().unwrap() = VaultMode::BaogramCamera;
+                                        // bao-video owns the display from here
+                                    }
+                                    Err(_) => {
+                                        global_config.lock().unwrap().pause_accel(false);
+                                        modals.show_notification("Camera is busy", None).ok();
+                                        vault_ui.redraw();
+                                    }
+                                }
+                                true
+                            }
+                            '←' => {
+                                // start receiving an animated QR transfer
+                                global_config.lock().unwrap().pause_accel(true);
+                                vault_ui.camera_transition();
+                                *mode.lock().unwrap() = VaultMode::BaogramReceive;
+                                baogram::transfer::spawn_receive_worker(baogram.clone(), conn);
+                                true
+                            }
+                            _ => false,
+                        },
+                        VaultMode::BaogramCamera => match kc {
+                            '\0' | '🔽' | '🔼' | '⏰' => false,
+                            '🔥' => {
+                                // freeze the frame; the camera powers down on
+                                // the freeze inside bao-video
+                                match baogram::camera::capture_mono1(&gfx) {
+                                    Ok((image, _metrics)) => {
+                                        baogram::controller::set_pending_capture(&baogram, image);
+                                        *mode.lock().unwrap() = VaultMode::BaogramPreview;
+                                    }
+                                    Err(e) => {
+                                        log::warn!("baogram capture failed: {}", e);
+                                        baogram::camera::preview_stop(&gfx);
+                                        *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                                    }
+                                }
+                                global_config.lock().unwrap().pause_accel(false);
+                                tt.sleep_ms(100).ok();
+                                vault_ui.redraw();
+                                true
+                            }
+                            _ => {
+                                // any other key cancels the preview
+                                baogram::camera::preview_stop(&gfx);
+                                global_config.lock().unwrap().pause_accel(false);
+                                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                                tt.sleep_ms(100).ok();
+                                vault_ui.redraw();
+                                true
+                            }
+                        },
+                        VaultMode::BaogramPreview => match kc {
+                            '\0' | '🔽' | '🔼' | '⏰' => false,
+                            '🔥' => {
+                                let status = baogram::controller::save_pending(&baogram, &pddb);
+                                if status != "saved" {
+                                    modals.show_notification(&status, None).ok();
+                                }
+                                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                                vault_ui.redraw();
+                                true
+                            }
+                            '←' => {
+                                let retake_allowed = matches!(
+                                    baogram.lock().unwrap().pending.as_ref().map(|p| p.source),
+                                    Some(baogram::PendingSource::Captured)
+                                );
+                                if retake_allowed {
+                                    baogram::controller::clear_pending(&baogram);
+                                    global_config.lock().unwrap().pause_accel(true);
+                                    vault_ui.camera_transition();
+                                    match baogram::camera::preview_start(&gfx) {
+                                        Ok(()) => {
+                                            *mode.lock().unwrap() = VaultMode::BaogramCamera;
+                                        }
+                                        Err(_) => {
+                                            global_config.lock().unwrap().pause_accel(false);
+                                            modals.show_notification("Camera is busy", None).ok();
+                                            *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                                            vault_ui.redraw();
+                                        }
+                                    }
+                                } else {
+                                    // received posts: discard on left as well
+                                    baogram::controller::clear_pending(&baogram);
+                                    *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                                    vault_ui.redraw();
+                                }
+                                true
+                            }
+                            _ => {
+                                // discard / reject
+                                baogram::controller::clear_pending(&baogram);
+                                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                                vault_ui.redraw();
+                                true
+                            }
+                        },
+                        VaultMode::BaogramShare { .. } => match kc {
+                            '\0' | '🔽' | '🔼' | '⏰' => false,
+                            '↑' | '↓' => {
+                                // diagnostics: cycle fragment payload size
+                                if let Some(share) = baogram.lock().unwrap().share.as_mut() {
+                                    share.cycle_payload();
+                                }
+                                true
+                            }
+                            '←' | '→' => {
+                                // diagnostics: cycle frame period
+                                if let Some(share) = baogram.lock().unwrap().share.as_mut() {
+                                    share.cycle_period();
+                                }
+                                true
+                            }
+                            _ => {
+                                baogram::controller::stop_share(&baogram);
+                                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                                animate.store(false, Ordering::SeqCst);
+                                vault_ui.redraw();
+                                true
+                            }
+                        },
+                        VaultMode::BaogramReceive => {
+                            // keys during receive: the keypress already
+                            // aborted the stream inside bao-video; the worker
+                            // notices (read returns None) and reports back
+                            // via BaogramRxDone. Nothing to do here.
+                            kc != '\0'
+                        }
+                        _ => false,
+                    };
+
+                    if baogram_handled {
+                        // consumed above
+                    } else {
                     match k.unwrap_or('\0') {
                         '∴' => {
                             animate.store(false, Ordering::SeqCst);
@@ -398,6 +589,11 @@ fn main() -> ! {
                                 tour_menu_mgr.redraw();
                             } else if matches!(mode_now, VaultMode::ConfirmGene) {
                                 gene_menu_mgr.redraw();
+                            } else if matches!(mode_now, VaultMode::BaogramFeed)
+                                || matches!(mode_now, VaultMode::BaogramPostMenu)
+                            {
+                                *mode.lock().unwrap() = VaultMode::BaogramPostMenu;
+                                baogram_menu_mgr.redraw();
                             } else if matches!(mode_now, VaultMode::Idle)
                                 || matches!(mode_now, VaultMode::IdleDevMode)
                             {
@@ -455,6 +651,7 @@ fn main() -> ! {
                         _ => {
                             log::trace!("debug: unhandled key to main {:?}", k);
                         }
+                    }
                     }
                 }
             }),
@@ -991,6 +1188,72 @@ fn main() -> ! {
             Some(VaultOp::ScreenOff) => {
                 global_config.lock().unwrap().screen_off();
             }
+            Some(VaultOp::BaogramEnter) => {
+                {
+                    let mut s = baogram.lock().unwrap();
+                    s.feed.refresh(&pddb);
+                    s.feed_cache = None;
+                }
+                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                animate.store(false, Ordering::SeqCst);
+                vault_ui.redraw();
+            }
+            Some(VaultOp::BaogramShareOp) => {
+                if baogram::controller::start_share(&baogram, &pddb) {
+                    *mode.lock().unwrap() = VaultMode::BaogramShare { quantum: 0 };
+                } else {
+                    modals.show_notification("Nothing to share\n(post missing or invalid)", None).ok();
+                    *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                }
+                animate.store(mode.lock().unwrap().should_animate(), Ordering::SeqCst);
+                vault_ui.redraw();
+            }
+            Some(VaultOp::BaogramDeleteOp) => {
+                let status = baogram::controller::delete_current(&baogram, &pddb);
+                modals.show_notification(&status, None).ok();
+                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                vault_ui.redraw();
+            }
+            Some(VaultOp::BaogramAuthorOp) => {
+                let info = baogram::controller::current_author_info(&baogram, &pddb);
+                modals.show_notification(&info, None).ok();
+                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                vault_ui.redraw();
+            }
+            Some(VaultOp::BaogramBackOp) => {
+                *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                vault_ui.redraw();
+            }
+            Some(VaultOp::BaogramExitOp) => {
+                *mode.lock().unwrap() = VaultMode::Idle;
+                animate.store(true, Ordering::SeqCst);
+                vault_ui.redraw();
+            }
+            Some(VaultOp::BaogramRxDone) => xous::msg_scalar_unpack!(msg, code, _, _, _, {
+                global_config.lock().unwrap().pause_accel(false);
+                if matches!(*mode.lock().unwrap(), VaultMode::BaogramReceive) {
+                    match code {
+                        baogram::RX_DONE_OK => {
+                            *mode.lock().unwrap() = VaultMode::BaogramPreview;
+                        }
+                        baogram::RX_DONE_CANCELED => {
+                            *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                        }
+                        _ => {
+                            let err = baogram
+                                .lock()
+                                .unwrap()
+                                .rx_error
+                                .clone()
+                                .unwrap_or_else(|| "unknown error".to_string());
+                            modals.show_notification(&format!("Receive failed:\n{}", err), None).ok();
+                            *mode.lock().unwrap() = VaultMode::BaogramFeed;
+                        }
+                    }
+                    tt.sleep_ms(100).ok();
+                    vault_ui.redraw();
+                }
+            }),
             Some(VaultOp::ImageLoad) => xous::msg_scalar_unpack!(msg, load, _, _, _, {
                 if load == 0 {
                     vault_ui.user_bitmap.take();

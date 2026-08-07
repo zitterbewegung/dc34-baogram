@@ -274,6 +274,13 @@ impl GlobalConfig {
                 VaultMode::ShowKey { quantum: _ } => (true, LONG_TIMEOUT),
                 VaultMode::TokenTour => (true, MEDIUM_TIMEOUT),
                 VaultMode::Tour => (true, MEDIUM_TIMEOUT),
+                VaultMode::BaogramFeed => (true, MEDIUM_TIMEOUT),
+                VaultMode::BaogramCamera => (true, LONG_TIMEOUT),
+                VaultMode::BaogramPreview => (true, MEDIUM_TIMEOUT),
+                VaultMode::BaogramPostMenu => (true, MEDIUM_TIMEOUT),
+                VaultMode::BaogramShare { quantum: _ } => (true, LONG_TIMEOUT),
+                VaultMode::BaogramReceive => (true, LONG_TIMEOUT),
+                VaultMode::BaogramProfile => (true, MEDIUM_TIMEOUT),
             };
             self.power_manager_config(enable, Some(duration_sec));
         }

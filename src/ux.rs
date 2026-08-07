@@ -537,6 +537,9 @@ pub struct VaultUi {
     edge: bool,
     last_mode: VaultMode,
     pub bio_loaded: bool,
+
+    // Baogram shared state (feed, pending post, share loop)
+    baogram: Option<crate::baogram::Shared>,
 }
 
 impl VaultUi {
@@ -601,8 +604,11 @@ impl VaultUi {
             edge: false,
             last_mode: VaultMode::FactoryTest,
             bio_loaded: false,
+            baogram: None,
         }
     }
+
+    pub fn set_baogram(&mut self, baogram: crate::baogram::Shared) { self.baogram = Some(baogram); }
 
     pub fn reset_help_state(&mut self) { self.help_state = HelpState::BadgeRecap { seen_press: false }; }
 
@@ -1439,10 +1445,227 @@ impl VaultUi {
                         _ => {}
                     }
                 }
+            }
+            VaultMode::BaogramFeed | VaultMode::BaogramPostMenu => {
+                self.baogram_draw_feed();
+            }
+            VaultMode::BaogramCamera | VaultMode::BaogramReceive => {
+                // bao-video owns the display while the camera runs; drawing
+                // here would be suppressed (and pointless)
+            }
+            VaultMode::BaogramPreview => {
+                self.baogram_draw_preview();
+            }
+            VaultMode::BaogramShare { quantum } => {
+                self.baogram_draw_share(quantum);
+            }
+            VaultMode::BaogramProfile => {
+                self.baogram_draw_profile();
             } // _ => unimplemented!(),
         }
         self.gfx.flush().ok();
         self.last_mode = (*self.mode.lock().unwrap()).clone();
+    }
+
+    /// Bottom-strip label under a Baogram preview bitmap (rows 120..128).
+    fn baogram_label(&mut self, text: &str) {
+        let mut tv = TextView::new(
+            Gid::dummy(),
+            TextBounds::CenteredTop(Rectangle::new(Point::new(0, 116), Point::new(127, 128))),
+        );
+        tv.style = GlyphStyle::Small;
+        tv.draw_border = false;
+        tv.clear_area = false;
+        tv.ellipsis = true;
+        tv.invert = false;
+        write!(tv, "{}", text).ok();
+        self.gfx.draw_textview(&mut tv).ok();
+    }
+
+    fn baogram_draw_feed(&mut self) {
+        let Some(bg) = self.baogram.clone() else { return };
+        let mut s = bg.lock().unwrap();
+        self.clear_area();
+        if s.feed.is_empty() {
+            let mut tv = TextView::new(
+                Gid::dummy(),
+                TextBounds::CenteredTop(Rectangle::new(Point::new(0, 10), Point::new(127, 120))),
+            );
+            tv.style = GlyphStyle::Regular;
+            tv.draw_border = false;
+            write!(tv, "Baogram\n\nNo posts yet.\n\nfire: camera\nleft: receive\nright: profile\n:.: menu")
+                .ok();
+            self.gfx.draw_textview(&mut tv).ok();
+            return;
+        }
+        let id = s.feed.current().unwrap();
+        let cache_valid = s.feed_cache.as_ref().map(|c| c.id == id).unwrap_or(false);
+        if !cache_valid {
+            let pos = s.feed.position_label();
+            let cache = match crate::baogram::storage::load_post(&self.pddb.borrow(), &id) {
+                Some(bytes) => match baogram_core::post::Post::parse(&bytes) {
+                    Ok(post) => match post.decode_image() {
+                        Ok(img) => {
+                            let who = if post.handle.is_empty() {
+                                baogram_core::crypto::hex_fingerprint(&post.author_pubkey)[..8].to_string()
+                            } else {
+                                post.handle.clone()
+                            };
+                            crate::baogram::FeedCache {
+                                id,
+                                bits: crate::baogram::render::mono1_to_display_bitmap(&img),
+                                label: format!("{} {}", who, pos),
+                                valid: true,
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("baogram: stored post image undecodable: {:?}", e);
+                            crate::baogram::FeedCache {
+                                id,
+                                bits: crate::baogram::render::corrupt_placeholder(),
+                                label: format!("corrupt {}", pos),
+                                valid: false,
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        log::warn!("baogram: stored post invalid: {:?}", e);
+                        crate::baogram::FeedCache {
+                            id,
+                            bits: crate::baogram::render::corrupt_placeholder(),
+                            label: format!("corrupt {}", pos),
+                            valid: false,
+                        }
+                    }
+                },
+                None => crate::baogram::FeedCache {
+                    id,
+                    bits: crate::baogram::render::corrupt_placeholder(),
+                    label: format!("missing {}", s.feed.position_label()),
+                    valid: false,
+                },
+            };
+            s.feed_cache = Some(cache);
+        }
+        let (bits, label) = {
+            let cache = s.feed_cache.as_ref().unwrap();
+            (cache.bits, cache.label.clone())
+        };
+        drop(s);
+        self.gfx.bitmap(&bits, None, None).ok();
+        self.baogram_label(&label);
+    }
+
+    fn baogram_draw_preview(&mut self) {
+        let Some(bg) = self.baogram.clone() else { return };
+        let s = bg.lock().unwrap();
+        self.clear_area();
+        let Some(pending) = s.pending.as_ref() else {
+            drop(s);
+            *self.mode.lock().unwrap() = VaultMode::BaogramFeed;
+            return;
+        };
+        let (bits, label) = match pending.source {
+            crate::baogram::PendingSource::Captured => {
+                let img = pending.image.as_ref().expect("captured pending must hold an image");
+                (
+                    crate::baogram::render::mono1_to_display_bitmap(img),
+                    "fire:save left:retake".to_string(),
+                )
+            }
+            crate::baogram::PendingSource::Received => {
+                let (post, _) = pending.post.as_ref().expect("received pending must hold a post");
+                match post.decode_image() {
+                    Ok(img) => {
+                        let who = if post.handle.is_empty() { "anon" } else { &post.handle };
+                        (
+                            crate::baogram::render::mono1_to_display_bitmap(&img),
+                            format!("{}: fire:save", who),
+                        )
+                    }
+                    Err(_) => (crate::baogram::render::corrupt_placeholder(), "undecodable".to_string()),
+                }
+            }
+        };
+        drop(s);
+        self.gfx.bitmap(&bits, None, None).ok();
+        self.baogram_label(&label);
+    }
+
+    fn baogram_draw_share(&mut self, quantum: u32) {
+        let Some(bg) = self.baogram.clone() else { return };
+        let mut s = bg.lock().unwrap();
+        if let Some(share) = s.share.as_mut() {
+            let qpf = share.quanta_per_frame();
+            if quantum % qpf == 0 || share.settings_dirty {
+                let flash_settings = share.settings_dirty;
+                share.settings_dirty = false;
+                if let Some(code) = share.current_qr() {
+                    let label = if flash_settings {
+                        format!("{}B {}ms", share.payload_bytes, share.period_ms)
+                    } else if (quantum / (qpf * 4).max(1)) % 2 == 1 {
+                        "any key stops".to_string()
+                    } else {
+                        format!(
+                            "{} {}/{}",
+                            &share.short_id_hex()[..4],
+                            share.frag_idx + 1,
+                            share.count()
+                        )
+                    };
+                    self.clear_area();
+                    let width = code.width();
+                    let modules: Vec<bool> =
+                        code.to_colors().into_iter().map(|c| c != Color::Light).collect();
+                    self.gfx.render_qr(&modules, width, Point::new(0, 0)).ok();
+                    let mut tv = TextView::new(
+                        Gid::dummy(),
+                        TextBounds::CenteredTop(Rectangle::new(
+                            Point::new(20, 127 - 12),
+                            Point::new(107, 130),
+                        )),
+                    );
+                    tv.invert = true;
+                    tv.margin = Point::new(3, -2);
+                    tv.style = GlyphStyle::Small;
+                    tv.draw_border = false;
+                    write!(tv, "{}", label).ok();
+                    self.gfx.draw_textview(&mut tv).ok();
+                }
+                share.advance();
+            }
+            *self.mode.lock().unwrap() = VaultMode::BaogramShare { quantum: quantum.wrapping_add(1) };
+        } else {
+            *self.mode.lock().unwrap() = VaultMode::BaogramFeed;
+        }
+    }
+
+    fn baogram_draw_profile(&mut self) {
+        let Some(bg) = self.baogram.clone() else { return };
+        let s = bg.lock().unwrap();
+        let handle = s.identity.handle.clone();
+        let fp = s.identity.fingerprint();
+        let posts = s.feed.len();
+        let seq = s.identity.seq();
+        drop(s);
+        self.clear_area();
+        let mut tv = TextView::new(
+            Gid::dummy(),
+            TextBounds::CenteredTop(Rectangle::new(Point::new(0, 4), Point::new(127, 124))),
+        );
+        tv.style = GlyphStyle::Small;
+        tv.draw_border = false;
+        write!(
+            tv,
+            "Baogram profile\n\n@{}\nfp {}\nposts: {}/{}\nposted: {}\n\nup/down: browse\nfire: camera\nleft: receive",
+            handle,
+            &fp[..8],
+            posts,
+            crate::baogram::MAX_POSTS,
+            seq
+        )
+        .ok();
+        self.gfx.draw_textview(&mut tv).ok();
     }
 
     /// Returns `true` if in longpress state. Only call this once per key hit input.
@@ -1710,6 +1933,47 @@ impl VaultUi {
                 // screen in all button presses
                 if k != '🔥' { Some(k) } else { None }
             }
+            VaultMode::BaogramFeed => match k {
+                '↑' => {
+                    if let Some(bg) = &self.baogram {
+                        bg.lock().unwrap().feed.prev();
+                    }
+                    None
+                }
+                '↓' => {
+                    if let Some(bg) = &self.baogram {
+                        bg.lock().unwrap().feed.next();
+                    }
+                    None
+                }
+                '→' => {
+                    *self.mode.lock().unwrap() = VaultMode::BaogramProfile;
+                    None
+                }
+                // '🔥' (camera), '←' (receive), and '∴' (post menu) need
+                // main-loop resources; pass them through
+                _ => Some(k),
+            },
+            // camera-owned and pending-decision modes: the main loop drives
+            // all transitions (camera stop/capture/save need its resources)
+            VaultMode::BaogramCamera
+            | VaultMode::BaogramReceive
+            | VaultMode::BaogramPreview
+            | VaultMode::BaogramShare { .. }
+            | VaultMode::BaogramPostMenu => Some(k),
+            VaultMode::BaogramProfile => match k {
+                // ignore sensor/RTC events
+                '🔽' | '🔼' | '⏰' => Some(k),
+                // any real key returns to the feed
+                '🔥' => {
+                    *self.mode.lock().unwrap() = VaultMode::BaogramFeed;
+                    None
+                }
+                _ => {
+                    *self.mode.lock().unwrap() = VaultMode::BaogramFeed;
+                    Some(k)
+                }
+            },
             // catch-all for now
             _ => Some(k),
         };
