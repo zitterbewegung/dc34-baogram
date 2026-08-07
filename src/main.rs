@@ -338,9 +338,11 @@ fn main() -> ! {
         }
     }
 
-    // boot straight into the Baogram feed unless the intro tour is due;
-    // "Exit Baogram" in the post menu returns to the idle/vault side
-    if matches!(*mode.lock().unwrap(), VaultMode::Idle | VaultMode::IdleDevMode) {
+    // boot straight into the Baogram feed, including on a freshly flashed
+    // badge's first cold boot where the intro tour would otherwise run;
+    // "Exit Baogram" in the post menu returns to the idle/vault side.
+    // Token mode (Password/TokenTour) and FactoryTest are left alone.
+    if matches!(*mode.lock().unwrap(), VaultMode::Idle | VaultMode::IdleDevMode | VaultMode::Tour) {
         {
             let mut s = baogram.lock().unwrap();
             s.feed.refresh(&pddb);
