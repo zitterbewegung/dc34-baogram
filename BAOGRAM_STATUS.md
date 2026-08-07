@@ -65,6 +65,36 @@ and every claim below is explicit about being host/build-level evidence.
 7. The share loop's QR is regenerated on the 250 ms UI pump, so
    effective frame periods quantize to multiples of 250 ms.
 
+## Adversarial review
+
+A multi-agent adversarial review (find + refutation-verify) ran over all
+new code before finalization. Seven confirmed findings were fixed:
+
+1. `AcquireQr` now respects the camera mutual-exclusion invariant
+   (previously a concurrent `test qrget` from the console could reset
+   the camera under a live Baogram preview and leak a parked envelope).
+2. `AcquireQr` invalidates a frozen still before overwriting the frame
+   buffer (previously chunk reads could return torn frames).
+3. Hosted-mode key presses now abort a QR stream like the board build
+   (previously a hosted receive could never be canceled).
+4. `∴` on the Baogram profile screen no longer raises the credential
+   manager menu over the feed.
+5. Badge receive ignores fragments from *other* posts instead of
+   aborting the whole transfer when another sender is in view.
+6. The host receiver does the same (previously one foreign QR frame
+   killed a 30/41-fragment session).
+7. The new GfxOpcodes carry explicit discriminants (4096..4103) so
+   hosted server and client builds — which resolve different ux-api
+   feature sets — agree on opcode numbers.
+
+Accepted (documented, not fixed) minors: the Rust `base45` crate accepts
+a noncanonical 2-character tail that Python rejects (CRC+parse still
+protect integrity); parsers accept any well-formed PackBits stream, so
+post IDs identify bytes, not pixels (see BAOGRAM_PROTOCOL.md); a cancel
+key pressed in the sub-second window before the receive worker's stream
+starts is absorbed (press again); share-loop periods quantize to the
+250 ms UI pump.
+
 ## Remaining risks
 
 * Camera exposure/threshold interaction on real scenes (adaptive mean

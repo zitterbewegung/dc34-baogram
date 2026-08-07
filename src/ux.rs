@@ -1657,7 +1657,7 @@ impl VaultUi {
         tv.draw_border = false;
         write!(
             tv,
-            "Baogram profile\n\n@{}\nfp {}\nposts: {}/{}\nposted: {}\n\nup/down: browse\nfire: camera\nleft: receive",
+            "Baogram profile\n\n@{}\nfp {}\nposts: {}/{}\nposted: {}\n\nany key: back to feed",
             handle,
             &fp[..8],
             posts,
@@ -1964,6 +1964,14 @@ impl VaultUi {
             VaultMode::BaogramProfile => match k {
                 // ignore sensor/RTC events
                 '🔽' | '🔼' | '⏰' => Some(k),
+                // consume '∴' so the main loop cannot raise the credential
+                // menu over the feed; redraw here because the handle_key
+                // tail deliberately skips redraws for '∴'
+                '∴' => {
+                    *self.mode.lock().unwrap() = VaultMode::BaogramFeed;
+                    self.redraw();
+                    None
+                }
                 // any real key returns to the feed
                 '🔥' => {
                     *self.mode.lock().unwrap() = VaultMode::BaogramFeed;

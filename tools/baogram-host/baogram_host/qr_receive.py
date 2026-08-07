@@ -48,11 +48,21 @@ def receive(camera_index: int = 0, timeout_s: float | None = None) -> bytes:
                     except FragmentError as e:
                         print(f"ignoring undecodable QR: {e}", file=sys.stderr)
                         frag = None
+                    if frag is not None and reassembler is not None and (
+                        frag.short_post_id != reassembler.short_post_id
+                    ):
+                        # a fragment from a different post (another sender in
+                        # view) is not part of this transfer: skip it
+                        print(
+                            f"ignoring fragment from other post {frag.short_post_id.hex()[:8]}",
+                            file=sys.stderr,
+                        )
+                        frag = None
                     if frag is not None:
                         if reassembler is None:
                             reassembler = Reassembler(frag)
                         else:
-                            result = reassembler.feed(frag)  # conflict raises
+                            result = reassembler.feed(frag)  # same-post conflict raises
                             if result == "duplicate":
                                 pass
                         print(

@@ -5,8 +5,14 @@ reference implementation is `libraries/baogram-core`; the Python peer
 (`tools/baogram-host`) is byte-for-byte compatible and cross-tested
 against the golden vectors in `libraries/baogram-core/test-vectors/`.
 
-**All multi-byte integers are big-endian.** There is exactly one valid
-serialization for any post: parsers reject noncanonical encodings.
+**All multi-byte integers are big-endian.** The reference encoders are
+fully deterministic (identical bytes from identical inputs across Rust
+and Python). Parsers enforce every canonicality rule listed below, with
+one documented exception: any *well-formed* PackBits stream that decodes
+to exactly 7,680 bytes is accepted, so a third-party encoder using
+different (valid) run/literal choices produces a post with different
+bytes — and therefore a different digest and post ID — for the same
+pixels. Post IDs identify exact post bytes, not pixel content.
 
 ## 1. Image
 
@@ -121,8 +127,10 @@ fragment; QR codes use error-correction level M. Receivers:
 
 * accept fragments in any order;
 * ignore exact duplicates;
-* fail the transfer on conflicting duplicates or on any disagreement in
-  (short id, count, total length, chunk size);
+* ignore fragments whose short post ID differs from the transfer in
+  progress (another sender in view is not a conflict);
+* fail the transfer on conflicting duplicates or on any same-ID
+  disagreement in (count, total length, chunk size);
 * allocate the reassembly buffer once from the validated `total_len`
   (bounded by 65,536) and track receipt in a fixed 4,096-bit bitmap;
 * refuse to parse an incomplete transfer as a post;

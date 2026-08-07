@@ -141,6 +141,20 @@ pub fn spawn_receive_worker(shared: Shared, main_conn: xous::CID) {
                         decode_stamps.push(tt.elapsed_ms());
                         match Fragment::from_base45(text.trim()) {
                             Ok(frag) => {
+                                // A fragment from a *different* post (another
+                                // badge sharing nearby) is not part of this
+                                // transfer: skip it rather than aborting.
+                                // Conflicts within the same post ID remain
+                                // fatal below.
+                                if let Some(r) = reassembler.as_ref() {
+                                    if frag.short_post_id != r.short_post_id() {
+                                        log::info!(
+                                            "baogram receive: ignoring fragment from other post {:x?}",
+                                            &frag.short_post_id[..4]
+                                        );
+                                        continue;
+                                    }
+                                }
                                 let feed_result = match reassembler.as_mut() {
                                     None => match Reassembler::new(&frag) {
                                         Ok((r, res)) => {

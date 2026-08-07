@@ -65,11 +65,17 @@ impl BaogramIdentity {
         }
         let seq = u64::from_be_bytes(buf[65..73].try_into().unwrap());
         let handle_len = (buf[73] as usize).min(HANDLE_MAX_BYTES);
-        let handle = if buf.len() >= 74 + handle_len {
+        let mut handle = if buf.len() >= 74 + handle_len {
+            // lossy conversion can EXPAND invalid bytes into 3-byte
+            // replacement chars; re-truncate so a corrupt record can never
+            // exceed the protocol bound and block posting forever
             String::from_utf8_lossy(&buf[74..74 + handle_len]).into_owned()
         } else {
             String::new()
         };
+        while handle.len() > HANDLE_MAX_BYTES {
+            handle.pop();
+        }
         Some(BaogramIdentity { seed, public_key, seq, handle })
     }
 

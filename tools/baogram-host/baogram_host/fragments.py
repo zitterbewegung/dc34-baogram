@@ -30,11 +30,11 @@ class FragmentError(ValueError):
 
 
 def _validate_geometry(frag_count: int, total_len: int, chunk_size: int) -> None:
-    if frag_count == 0 or frag_count > MAX_FRAGMENT_COUNT:
+    if frag_count <= 0 or frag_count > MAX_FRAGMENT_COUNT:
         raise FragmentError("count_out_of_range")
-    if chunk_size == 0 or chunk_size > MAX_FRAGMENT_PAYLOAD:
+    if chunk_size <= 0 or chunk_size > MAX_FRAGMENT_PAYLOAD:
         raise FragmentError("chunk_size_invalid")
-    if total_len == 0 or total_len > MAX_POST_BYTES:
+    if total_len <= 0 or total_len > MAX_POST_BYTES:
         raise FragmentError("geometry_invalid", "total length")
     if -(-total_len // chunk_size) != frag_count:  # ceil division
         raise FragmentError("geometry_invalid", "count != ceil(total/chunk)")
@@ -117,7 +117,7 @@ class Fragment:
 def fragment_post(short_post_id: bytes, serialized_post: bytes, chunk_size: int) -> list[Fragment]:
     if len(short_post_id) != SHORT_ID_LEN:
         raise FragmentError("geometry_invalid", "short id length")
-    if chunk_size == 0 or chunk_size > MAX_FRAGMENT_PAYLOAD:
+    if chunk_size <= 0 or chunk_size > MAX_FRAGMENT_PAYLOAD:
         raise FragmentError("chunk_size_invalid")
     if not serialized_post or len(serialized_post) > MAX_POST_BYTES:
         raise FragmentError("geometry_invalid", "post length")
