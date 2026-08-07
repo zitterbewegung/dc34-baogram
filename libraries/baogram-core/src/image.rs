@@ -230,6 +230,16 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_frame_matches_golden_sha() {
+        use sha2::{Digest, Sha256};
+        // shared with xous-core services/bao-video/src/still.rs — the hosted
+        // camera serves this exact frame
+        let digest = Sha256::digest(synthetic_test_frame());
+        let hex: String = digest.iter().map(|b| format!("{:02x}", b)).collect();
+        assert_eq!(hex, "c82bfcf7e7ee582e204c151af00570cb832dcddced95df56f484d1cc7d0303db");
+    }
+
+    #[test]
     fn synthetic_frame_shape() {
         let f = synthetic_test_frame();
         assert_eq!(f.len(), IMAGE_PIXELS);
