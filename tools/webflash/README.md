@@ -19,7 +19,7 @@ to write the images onto the badge's UF2 bootloader volume.
 3. Tick the acknowledgement box.
 4. Put the badge in update mode (README "Updates" section) so it mounts
    as a USB drive, then click the button and pick that drive. The page
-   validates the volume (`INFO_UF2.TXT`) and writes `loader.uf2`.
+   validates the volume (named `BAOCHIP`) and writes `loader.uf2`.
 5. The badge reboots and re-mounts; repeat the click for `swap.uf2`,
    then `xous.uf2` — the page walks you through the order.
 6. Power-cycle. First boot is slow (PDDB initialization); after that the

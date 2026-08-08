@@ -8,8 +8,10 @@
 #   2. The page's button click obtains a FileSystemDirectoryHandle for the
 #      badge's UF2 volume (the picker must run in the JS click handler to
 #      keep the user-activation token) and passes it to on_volume_selected().
-#   3. on_volume_selected() confirms the volume is a UF2 bootloader
-#      (INFO_UF2.TXT present), writes the current image, and advances.
+#   3. on_volume_selected() confirms the volume looks like the badge
+#      (named BAOCHIP; the real badge presents a plain FAT drive with NO
+#      INFO_UF2.TXT marker, unlike classic soft-UF2 bootloaders), writes
+#      the current image, and advances.
 #
 # The UF2 bootloader reboots the badge after each image, so the volume
 # handle goes stale between files; the user re-picks the volume once per
@@ -126,6 +128,13 @@ async def init():
 
 
 async def _is_uf2_volume(handle) -> bool:
+    # The DC34 badge's update mode is a plain FAT volume named BAOCHIP —
+    # it has no INFO_UF2.TXT marker (verified on hardware 2026-08-08).
+    # Accept by name; also accept a marker file so classic UF2 drives and
+    # renamed volumes still work.
+    if str(handle.name).upper() == "BAOCHIP":
+        _log("volume 'BAOCHIP' recognized as the badge update drive")
+        return True
     try:
         info_fh = await handle.getFileHandle("INFO_UF2.TXT")
         info = await (await info_fh.getFile()).text()
@@ -145,9 +154,10 @@ async def on_volume_selected(handle):
         return
     name = FLASH_ORDER[_step]
     if not await _is_uf2_volume(handle):
-        _log(f"'{handle.name}' does not look like a UF2 bootloader volume "
-             "(no INFO_UF2.TXT). Put the badge in update mode and pick the "
-             "volume that appears.")
+        _log(f"'{handle.name}' does not look like the badge update drive "
+             "(expected the volume named BAOCHIP). Put the badge in update "
+             "mode — hold any button while plugging in USB — and pick the "
+             "BAOCHIP volume.")
         return
 
     data = _images[name]
