@@ -12,11 +12,25 @@ import os
 import sys
 
 from . import crypto
-from .format import FormatError, Post
+from .format import FormatError, Post, format_geometry
 from .fragments import DEFAULT_FOUNTAIN_PAYLOAD, DEFAULT_FRAGMENT_PAYLOAD
-from .image import load_png_as_mono1, save_mono1_as_png
+from .image import (
+    IMAGE_HEIGHT,
+    IMAGE_WIDTH,
+    despeckle_small,
+    load_png_as_mono1,
+    save_mono1_as_png,
+    small_from_gray,
+)
 
-CODEC_NAMES = {0: "RawMono1", 1: "PackBitsMono1", 2: "RowDeltaMono1"}
+CODEC_NAMES = {0: "RawMono1", 1: "PackBitsMono1", 2: "RowDeltaMono1", 3: "CtxArithMono1"}
+
+
+def _format_name(pixel_format: int) -> str:
+    geometry = format_geometry(pixel_format)
+    if geometry is None:
+        return f"pixel format {pixel_format}"
+    return f"{geometry[0]}x{geometry[1]}"
 
 
 def _load_or_create_identity(key_path: str) -> crypto.Identity:
@@ -45,17 +59,34 @@ def cmd_keygen(args) -> int:
     return 0
 
 
+def _load_gray_frame(path: str) -> bytes:
+    """Load an image file as a 256x240 8-bit grayscale frame."""
+    from PIL import Image
+
+    img = Image.open(path).convert("L")
+    if img.size != (IMAGE_WIDTH, IMAGE_HEIGHT):
+        img = img.resize((IMAGE_WIDTH, IMAGE_HEIGHT))
+    return img.tobytes()
+
+
 def cmd_make_post(args) -> int:
     ident = _load_or_create_identity(args.key)
-    packed = load_png_as_mono1(args.image, args.threshold)
-    post = Post.create(ident, args.seq, args.handle, args.caption, packed)
+    if args.size == "small":
+        gray = _load_gray_frame(args.image)
+        packed = despeckle_small(small_from_gray(gray, args.threshold))
+        post = Post.create_small(ident, args.seq, args.handle, args.caption, packed)
+    else:
+        packed = load_png_as_mono1(args.image, args.threshold)
+        post = Post.create(ident, args.seq, args.handle, args.caption, packed)
     data = post.serialize()
     with open(args.output, "wb") as f:
         f.write(data)
+    unc_len = format_geometry(post.pixel_format)[2]
     print(
         f"wrote {args.output}: {len(data)} bytes, post id {post.post_id.hex()}, "
+        f"{_format_name(post.pixel_format)}, "
         f"codec {CODEC_NAMES.get(post.codec, str(post.codec))} "
-        f"({len(post.encoded_image)}/{7680} image bytes)"
+        f"({len(post.encoded_image)}/{unc_len} image bytes)"
     )
     return 0
 
@@ -81,8 +112,9 @@ def cmd_inspect(args) -> int:
     print(f"handle:       {post.handle!r}")
     print(f"caption:      {post.caption!r}")
     print(f"sequence:     {post.seq}")
+    print(f"format:       {_format_name(post.pixel_format)}")
     print(f"codec:        {CODEC_NAMES.get(post.codec, str(post.codec))}")
-    print(f"image bytes:  {len(post.encoded_image)} encoded / 7680 raw")
+    print(f"image bytes:  {len(post.encoded_image)} encoded / {format_geometry(post.pixel_format)[2]} raw")
     print(f"total bytes:  {len(data)}")
     print("signature:    VALID")
     return 0
@@ -153,6 +185,9 @@ def main(argv=None) -> int:
     mp.add_argument("--seq", type=int, default=0)
     mp.add_argument("--threshold", type=int, default=None,
                     help="override the global quantization threshold (0-255)")
+    mp.add_argument("--size", choices=("small", "full"), default="small",
+                    help="small = 128x120 pixel format 2 (default), "
+                    "full = 256x240 pixel format 1")
     mp.set_defaults(fn=cmd_make_post)
 
     ins = sub.add_parser("inspect", help="print post metadata")

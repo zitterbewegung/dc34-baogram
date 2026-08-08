@@ -58,19 +58,28 @@ fn check_or_write(name: &str, bytes: &[u8]) {
     }
 }
 
-/// The canonical compressible golden post: synthetic frame. Its strong
-/// vertical correlation makes the row-delta codec win.
+/// The primary golden post: synthetic frame with a FORCED row-delta
+/// encoding (codec 2). Forcing keeps this vector byte-stable as
+/// `encode_best` gains codecs; parse coverage for codec 2 rides on it.
 fn golden_post_rowdelta() -> Post {
     let identity = Identity::from_seed(&TEST_SEED);
     let image = Mono1Image::quantize(&synthetic_test_frame(), None).unwrap();
-    let post = Post::create(&identity, GOLDEN_SEQ, GOLDEN_HANDLE, GOLDEN_CAPTION, &image).unwrap();
-    assert_eq!(post.codec, codec::CODEC_ROWDELTA_MONO1, "synthetic frame must pick row-delta");
+    let enc = codec::packbits_encode(&codec::row_delta_filter(image.packed(), 32));
+    let post = Post::sign_new(
+        &identity,
+        crate::post::PIXEL_FORMAT_MONO1,
+        codec::CODEC_ROWDELTA_MONO1,
+        GOLDEN_SEQ,
+        GOLDEN_HANDLE,
+        GOLDEN_CAPTION,
+        enc,
+    )
+    .unwrap();
+    assert_eq!(post.codec, codec::CODEC_ROWDELTA_MONO1);
     post
 }
 
-/// A golden post that exercises codec 1: every row is a solid run of one
-/// pseudo-random byte, so PackBits and row-delta tie and the lower codec
-/// id wins by the canonical rule.
+/// Codec-1 parse coverage: solid pseudo-random rows, FORCED PackBits.
 fn golden_post_packbits() -> Post {
     let identity = Identity::from_seed(&TEST_SEED);
     let mut state = 0x0bad_cafeu32;
@@ -81,10 +90,55 @@ fn golden_post_packbits() -> Post {
         state ^= state << 5;
         img.extend_from_slice(&[(state & 0xff) as u8; 32]);
     }
-    let image = Mono1Image::from_packed(&img).unwrap();
-    let post = Post::create(&identity, GOLDEN_SEQ + 2, GOLDEN_HANDLE, "packbits golden", &image).unwrap();
-    assert_eq!(post.codec, codec::CODEC_PACKBITS_MONO1, "tie must pick the lower codec id");
+    let enc = codec::packbits_encode(&img);
+    Post::sign_new(
+        &identity,
+        crate::post::PIXEL_FORMAT_MONO1,
+        codec::CODEC_PACKBITS_MONO1,
+        GOLDEN_SEQ + 2,
+        GOLDEN_HANDLE,
+        "packbits golden",
+        enc,
+    )
+    .unwrap()
+}
+
+/// What `Post::create` actually picks for the synthetic frame today —
+/// regenerated whenever the codec roster changes. The Python peer builds
+/// the same post and must match byte-for-byte.
+fn golden_post_best() -> Post {
+    let identity = Identity::from_seed(&TEST_SEED);
+    let image = Mono1Image::quantize(&synthetic_test_frame(), None).unwrap();
+    let post = Post::create(&identity, GOLDEN_SEQ, GOLDEN_HANDLE, GOLDEN_CAPTION, &image).unwrap();
+    assert_ne!(post.codec, codec::CODEC_RAW_MONO1, "synthetic frame must compress");
     post
+}
+
+/// Codec-3 parse coverage: synthetic frame with a FORCED CtxArithMono1
+/// encoding (row-delta wins the pick for this image, so codec 3 needs a
+/// forced vector).
+fn golden_post_ctxarith() -> Post {
+    let identity = Identity::from_seed(&TEST_SEED);
+    let image = Mono1Image::quantize(&synthetic_test_frame(), None).unwrap();
+    let enc = crate::ctxcodec::ctx_encode(image.packed(), 256, 240);
+    Post::sign_new(
+        &identity,
+        crate::post::PIXEL_FORMAT_MONO1,
+        codec::CODEC_CTXARITH_MONO1,
+        GOLDEN_SEQ + 4,
+        GOLDEN_HANDLE,
+        "ctxarith golden",
+        enc,
+    )
+    .unwrap()
+}
+
+/// The small-format golden post: full capture pipeline (2x2 gray box
+/// average -> mean threshold -> 3x3 majority despeckle -> sign).
+fn golden_post_small() -> Post {
+    let identity = Identity::from_seed(&TEST_SEED);
+    let small = crate::image::Mono1Small::from_gray(&synthetic_test_frame(), None).unwrap().despeckle();
+    Post::create_small(&identity, GOLDEN_SEQ + 3, GOLDEN_HANDLE, "small golden", &small).unwrap()
 }
 
 /// The canonical raw golden post: xorshift noise image, raw codec.
@@ -124,6 +178,28 @@ fn golden_valid_posts() {
     let raw_bytes = raw.serialize();
     check_or_write("valid-post-raw.bgrm", &raw_bytes);
     Post::parse(&raw_bytes).unwrap();
+
+    let ctx = golden_post_ctxarith();
+    let ctx_bytes = ctx.serialize();
+    check_or_write("valid-post-ctxarith.bgrm", &ctx_bytes);
+    let parsed = Post::parse(&ctx_bytes).unwrap();
+    assert_eq!(parsed.codec, codec::CODEC_CTXARITH_MONO1);
+    parsed.decode_image().unwrap();
+
+    let best = golden_post_best();
+    let best_bytes = best.serialize();
+    check_or_write("valid-post-best.bgrm", &best_bytes);
+    Post::parse(&best_bytes).unwrap();
+    eprintln!("valid-post-best: codec {} ({} bytes)", best.codec, best_bytes.len());
+
+    let small = golden_post_small();
+    let small_bytes = small.serialize();
+    check_or_write("valid-post-small.bgrm", &small_bytes);
+    let parsed = Post::parse(&small_bytes).unwrap();
+    let expected =
+        crate::image::Mono1Small::from_gray(&synthetic_test_frame(), None).unwrap().despeckle().to_full();
+    assert_eq!(parsed.decode_image().unwrap(), expected);
+    eprintln!("valid-post-small: codec {} ({} bytes)", small.codec, small_bytes.len());
 }
 
 #[test]
@@ -287,6 +363,20 @@ fn python_generated_vectors() {
         let text = std::fs::read_to_string(&frag_path).unwrap();
         let frag = Fragment::from_base45(text.trim()).expect("Python fragment must parse");
         assert_eq!(frag.short_post_id, post.short_id());
+    }
+
+    // small-format post from Python: same capture pipeline, must verify
+    // and decode to the Rust-computed despeckled small image
+    let small_path = dir.join("post-small-from-python.bgrm");
+    if small_path.exists() {
+        let small_bytes = std::fs::read(&small_path).unwrap();
+        let small_post = Post::parse(&small_bytes).expect("Python small post must verify in Rust");
+        assert_eq!(small_post.pixel_format, crate::post::PIXEL_FORMAT_MONO1_SMALL);
+        let expected = crate::image::Mono1Small::from_gray(&synthetic_test_frame(), None)
+            .unwrap()
+            .despeckle()
+            .to_full();
+        assert_eq!(small_post.decode_image().unwrap(), expected, "Python small pixels must match Rust");
     }
 
     // fountain frames from Python: feed them in reverse order (any-order by

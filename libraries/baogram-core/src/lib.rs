@@ -24,6 +24,7 @@
 
 pub mod codec;
 pub mod crypto;
+pub mod ctxcodec;
 pub mod error;
 pub mod fragment;
 pub mod image;

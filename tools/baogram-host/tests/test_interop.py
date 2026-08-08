@@ -10,9 +10,19 @@ import pathlib
 import pytest
 
 from baogram_host import codec, crypto
-from baogram_host.format import FormatError, Post
+from baogram_host.format import (
+    FormatError,
+    PIXEL_FORMAT_MONO1_SMALL,
+    Post,
+)
 from baogram_host.fragments import Fragment, FragmentError, Reassembler
-from baogram_host.image import quantize, synthetic_test_frame
+from baogram_host.image import (
+    despeckle_small,
+    quantize,
+    small_from_gray,
+    small_to_full,
+    synthetic_test_frame,
+)
 
 VECTORS = (
     pathlib.Path(__file__).resolve().parents[3] / "libraries" / "baogram-core" / "test-vectors"
@@ -65,12 +75,39 @@ def test_python_reserializes_rust_posts_byte_identically():
 
 def test_python_signature_matches_rust_exactly():
     """Ed25519 is deterministic: building the same post from the same seed
-    must reproduce the Rust bytes exactly (including the codec pick)."""
-    data = read("valid-post-rowdelta.bgrm")
+    must reproduce the Rust bytes exactly (including the codec pick, now a
+    three-way choice with CtxArithMono1 in play — hence the dedicated
+    valid-post-best.bgrm vector generated as exactly Post::create)."""
+    path = VECTORS / "valid-post-best.bgrm"
+    if not path.exists():
+        pytest.skip("valid-post-best.bgrm not yet generated on the Rust side")
+    data = path.read_bytes()
     ident = crypto.Identity(TEST_SEED)
     packed = quantize(synthetic_test_frame())
     rebuilt = Post.create(ident, 7, "golden", "baogram golden vector v1", packed)
     assert rebuilt.serialize() == data
+
+
+def test_valid_ctxarith_post_parses_and_reserializes():
+    path = VECTORS / "valid-post-ctxarith.bgrm"
+    if not path.exists():
+        pytest.skip("valid-post-ctxarith.bgrm not yet generated on the Rust side")
+    data = path.read_bytes()
+    post = Post.parse(data)
+    assert post.codec == codec.CODEC_CTXARITH_MONO1
+    assert post.serialize() == data
+
+
+def test_valid_small_post_parses_and_reserializes():
+    path = VECTORS / "valid-post-small.bgrm"
+    if not path.exists():
+        pytest.skip("valid-post-small.bgrm not yet generated on the Rust side")
+    data = path.read_bytes()
+    post = Post.parse(data)
+    assert post.pixel_format == PIXEL_FORMAT_MONO1_SMALL
+    assert post.serialize() == data
+    # decode_image pixel-doubles small posts to the full 256x240 format
+    assert len(post.decode_image()) == 7680
 
 
 @pytest.mark.parametrize(
@@ -180,5 +217,14 @@ def test_generate_python_vectors_for_rust(tmp_path):
     k = -(-len(data) // 96)
     lines = [fountain_frame_at(post.short_id, data, 96, f).to_base45() for f in range(k + 10)]
     (outdir / "fountain-from-python.b45").write_text("\n".join(lines) + "\n")
+    # small-format (pixel format 2) post over the canonical small capture
+    # pipeline: 2x2 box quantize + despeckle of the synthetic frame
+    small = despeckle_small(small_from_gray(synthetic_test_frame()))
+    small_post = Post.create_small(ident, 43, "pyhost", "small from python", small)
+    small_data = small_post.serialize()
+    (outdir / "post-small-from-python.bgrm").write_bytes(small_data)
     # self-check: parse back
     assert Post.parse(data).post_id == post.post_id
+    parsed_small = Post.parse(small_data)
+    assert parsed_small.pixel_format == PIXEL_FORMAT_MONO1_SMALL
+    assert parsed_small.decode_image() == small_to_full(small)

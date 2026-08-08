@@ -31,9 +31,10 @@ pixels. Post IDs identify exact post bytes, not pixel content.
 
 | id | name           | payload                                    |
 |----|----------------|--------------------------------------------|
-| 0  | RawMono1       | the 7,680 packed bytes verbatim            |
+| 0  | RawMono1       | the packed bytes verbatim                  |
 | 1  | PackBitsMono1  | deterministic PackBits variant (below)     |
 | 2  | RowDeltaMono1  | row-delta filter, then PackBitsMono1       |
+| 3  | CtxArithMono1  | 10-bit-context adaptive binary range coder |
 
 PackBitsMono1 stream = sequence of blocks, control byte `c`:
 
@@ -48,21 +49,33 @@ bytes. Decoders MUST require exactly 7,680 output bytes and reject:
 premature end, output overflow or underflow, control `0x80`, and
 trailing input.
 
-RowDeltaMono1 (codec 2): treat the packed image as 240 rows of 32 bytes;
-the filtered image is row 0 verbatim, then each row XORed byte-wise with
-the **original** row above it. The filtered bytes are then encoded with
+RowDeltaMono1 (codec 2): treat the packed image as rows of `width / 8`
+bytes (32 full-format, 16 small-format); the filtered image is row 0
+verbatim, then each row XORed byte-wise with the **original** row above
+it. The filtered bytes are then encoded with
 PackBitsMono1 exactly as codec 1. Decoding un-filters top-down using the
 already-reconstructed previous row. Threshold-quantized photos are
 vertically correlated, so the filtered image is mostly zero and
 compresses far better (the golden synthetic frame: 2,439 encoded bytes
 under codec 1 vs 195 under codec 2).
 
-Canonicality rules: a compressed codec (1 or 2) may be used **only when
-the encoded form is strictly smaller than 7,680 bytes**; parsers reject
-compressed posts whose encoded length is >= 7,680. Creators MUST compute
-both codec 1 and codec 2 and pick the smaller encoding, ties going to
-the lower codec id (so both implementations produce identical posts);
-raw (0) when neither compresses.
+CtxArithMono1 (codec 3): pixels in raster order, each coded by an
+adaptive binary range coder (the canonical LZMA rc: 11-bit
+probabilities, MOVE_BITS 5, 32-bit range, 8-bit renormalization at
+2^24, the `low` shift performed in 32-bit arithmetic) under a 10-bit
+three-line context template; out-of-bounds template reads are 0. The
+first output byte is always 0 and is kept; decoders skip it, seed the
+code register from bytes 1..5, and may leave at most 4 flushed bytes
+unread (more is trailing garbage). The byte-exact normative reference
+(identical in Rust and Python, pinned by cross-language vectors) is
+`libraries/baogram-core/src/ctxcodec.rs`.
+
+Canonicality rules: a compressed codec (1, 2 or 3) may be used **only
+when the encoded form is strictly smaller than the packed length** of
+the post's pixel format; parsers reject compressed posts that are not.
+Creators MUST compute codecs 1, 2 and 3 and pick the smallest encoding,
+ties going to the lowest codec id (so both implementations produce
+identical posts); raw (0) when nothing compresses.
 
 ## 3. Post container (`BGRM`)
 
@@ -71,8 +84,8 @@ offset  len  field
 ------  ---  -----
      0    4  magic = "BGRM"
      4    1  version = 1
-     5    1  pixel_format = 1  (Mono1 as in section 1)
-     6    1  codec (0 | 1 | 2)
+     5    1  pixel_format (1 = 256x240; 2 = 128x120 "small")
+     6    1  codec (0 | 1 | 2 | 3)
      7    1  flags = 0 (all bits reserved; nonzero rejected)
      8    2  width = 256
     10    2  height = 240

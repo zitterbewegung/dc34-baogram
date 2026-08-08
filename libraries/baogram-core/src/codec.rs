@@ -39,30 +39,30 @@ pub const CODEC_RAW_MONO1: u8 = 0;
 pub const CODEC_PACKBITS_MONO1: u8 = 1;
 /// Codec identifier for the row-delta filter + PackBits combination.
 pub const CODEC_ROWDELTA_MONO1: u8 = 2;
-
-/// Row stride the row-delta filter operates on. Fixed by the Mono1 image
-/// geometry (256 px / 8); the codec only applies to whole-row inputs.
-pub const ROWDELTA_ROW_BYTES: usize = 32;
+/// Codec identifier for the context-modeled binary range coder (see
+/// `crate::ctxcodec` for the normative algorithm).
+pub const CODEC_CTXARITH_MONO1: u8 = 3;
 
 /// Apply the row-delta filter: output row 0 is input row 0; output row i
-/// (i > 0) is input row i XOR input row i-1. Input length must be a
-/// multiple of [`ROWDELTA_ROW_BYTES`].
-pub fn row_delta_filter(input: &[u8]) -> Vec<u8> {
-    debug_assert!(input.len() % ROWDELTA_ROW_BYTES == 0);
+/// (i > 0) is input row i XOR input row i-1. `row_bytes` is the packed
+/// row stride (width / 8: 32 full-format, 16 small-format); input length
+/// must be a multiple of it.
+pub fn row_delta_filter(input: &[u8], row_bytes: usize) -> Vec<u8> {
+    debug_assert!(row_bytes > 0 && input.len() % row_bytes == 0);
     let mut out = input.to_vec();
-    for i in (ROWDELTA_ROW_BYTES..input.len()).rev() {
-        out[i] ^= input[i - ROWDELTA_ROW_BYTES];
+    for i in (row_bytes..input.len()).rev() {
+        out[i] ^= input[i - row_bytes];
     }
     out
 }
 
 /// Invert [`row_delta_filter`]: row 0 is copied; row i (i > 0) is the
 /// filtered row i XOR the already-reconstructed row i-1.
-pub fn row_delta_unfilter(filtered: &[u8]) -> Vec<u8> {
-    debug_assert!(filtered.len() % ROWDELTA_ROW_BYTES == 0);
+pub fn row_delta_unfilter(filtered: &[u8], row_bytes: usize) -> Vec<u8> {
+    debug_assert!(row_bytes > 0 && filtered.len() % row_bytes == 0);
     let mut out = filtered.to_vec();
-    for i in ROWDELTA_ROW_BYTES..out.len() {
-        out[i] ^= out[i - ROWDELTA_ROW_BYTES];
+    for i in row_bytes..out.len() {
+        out[i] ^= out[i - row_bytes];
     }
     out
 }
@@ -170,24 +170,31 @@ pub fn packbits_decode(input: &[u8], expected_len: usize) -> Result<Vec<u8>> {
 /// the lower codec id; the winner is used only when strictly smaller than
 /// the raw input, else raw (0). Parsers reject compressed posts whose
 /// encoded length is not smaller than raw.
-pub fn encode_best(packed: &[u8]) -> (u8, Vec<u8>) {
-    let packbits = packbits_encode(packed);
-    let (codec, best) = if packed.len() % ROWDELTA_ROW_BYTES == 0 {
-        let rowdelta = packbits_encode(&row_delta_filter(packed));
-        if rowdelta.len() < packbits.len() {
-            (CODEC_ROWDELTA_MONO1, rowdelta)
-        } else {
-            (CODEC_PACKBITS_MONO1, packbits)
-        }
-    } else {
-        (CODEC_PACKBITS_MONO1, packbits)
-    };
+pub fn encode_best(packed: &[u8], width_px: usize, height_px: usize) -> (u8, Vec<u8>) {
+    debug_assert!(width_px % 8 == 0 && packed.len() == width_px / 8 * height_px);
+    let row_bytes = width_px / 8;
+    let mut codec = CODEC_PACKBITS_MONO1;
+    let mut best = packbits_encode(packed);
+    let rowdelta = packbits_encode(&row_delta_filter(packed, row_bytes));
+    if rowdelta.len() < best.len() {
+        codec = CODEC_ROWDELTA_MONO1;
+        best = rowdelta;
+    }
+    let ctx = crate::ctxcodec::ctx_encode(packed, width_px, height_px);
+    if ctx.len() < best.len() {
+        codec = CODEC_CTXARITH_MONO1;
+        best = ctx;
+    }
     if best.len() < packed.len() { (codec, best) } else { (CODEC_RAW_MONO1, packed.to_vec()) }
 }
 
 /// Decode `encoded` according to `codec`, requiring exactly `expected_len`
-/// output bytes.
-pub fn decode(codec: u8, encoded: &[u8], expected_len: usize) -> Result<Vec<u8>> {
+/// output bytes. `row_bytes` is the packed row stride of the target image
+/// (width / 8), needed by the 2D-aware codecs.
+pub fn decode(codec: u8, encoded: &[u8], expected_len: usize, row_bytes: usize) -> Result<Vec<u8>> {
+    if row_bytes == 0 || expected_len % row_bytes != 0 {
+        return Err(BaogramError::NoncanonicalLength);
+    }
     match codec {
         CODEC_RAW_MONO1 => {
             if encoded.len() != expected_len {
@@ -206,11 +213,13 @@ pub fn decode(codec: u8, encoded: &[u8], expected_len: usize) -> Result<Vec<u8>>
             if encoded.len() >= expected_len {
                 return Err(BaogramError::NoncanonicalLength);
             }
-            // the filter is defined only for whole rows
-            if expected_len % ROWDELTA_ROW_BYTES != 0 {
+            Ok(row_delta_unfilter(&packbits_decode(encoded, expected_len)?, row_bytes))
+        }
+        CODEC_CTXARITH_MONO1 => {
+            if encoded.len() >= expected_len {
                 return Err(BaogramError::NoncanonicalLength);
             }
-            Ok(row_delta_unfilter(&packbits_decode(encoded, expected_len)?))
+            crate::ctxcodec::ctx_decode(encoded, row_bytes * 8, expected_len / row_bytes)
         }
         _ => Err(BaogramError::UnknownCodec),
     }
@@ -278,12 +287,12 @@ mod tests {
         assert!(n > MONO1_PACKED_LEN, "alternating bytes should not compress, got {}", n);
         // but every row is identical, so the row-delta filter zeroes rows
         // 1..240 and the image compresses extremely well under codec 2
-        let (codec, enc) = encode_best(&img);
+        let (codec, enc) = encode_best(&img, 256, 240);
         assert_eq!(codec, CODEC_ROWDELTA_MONO1);
         // row 0 stays an incompressible 33-byte literal; rows 1..240 are
         // 7,648 zero bytes -> 60 run blocks
         assert!(enc.len() < 200, "delta-filtered vertical bands should be tiny, got {}", enc.len());
-        assert_eq!(decode(codec, &enc, MONO1_PACKED_LEN).unwrap(), img);
+        assert_eq!(decode(codec, &enc, MONO1_PACKED_LEN, 32).unwrap(), img);
     }
 
     #[test]
@@ -308,7 +317,7 @@ mod tests {
             },
         ];
         for p in &patterns {
-            assert_eq!(row_delta_unfilter(&row_delta_filter(p)), *p);
+            assert_eq!(row_delta_unfilter(&row_delta_filter(p, 32), 32), *p);
         }
         // filter definition spot-check: row1 of the filtered output is
         // input_row1 ^ input_row0, computed from ORIGINAL rows
@@ -316,7 +325,7 @@ mod tests {
         img[0..32].fill(0b1010_0000);
         img[32..64].fill(0b0110_0000);
         img[64..96].fill(0b0011_0000);
-        let f = row_delta_filter(&img);
+        let f = row_delta_filter(&img, 32);
         assert_eq!(&f[0..32], &img[0..32]);
         assert!(f[32..64].iter().all(|&b| b == 0b1100_0000));
         assert!(f[64..96].iter().all(|&b| b == 0b0101_0000));
@@ -335,7 +344,7 @@ mod tests {
             state ^= state << 5;
             img.extend_from_slice(&[(state & 0xff) as u8; 32]);
         }
-        let (codec, _) = encode_best(&img);
+        let (codec, _) = encode_best(&img, 256, 240);
         assert_eq!(codec, CODEC_PACKBITS_MONO1);
     }
 
@@ -343,12 +352,12 @@ mod tests {
     fn rowdelta_noncanonical_rejected() {
         // encoded length not smaller than raw
         assert_eq!(
-            decode(CODEC_ROWDELTA_MONO1, &vec![0u8; MONO1_PACKED_LEN], MONO1_PACKED_LEN).unwrap_err(),
+            decode(CODEC_ROWDELTA_MONO1, &vec![0u8; MONO1_PACKED_LEN], MONO1_PACKED_LEN, 32).unwrap_err(),
             BaogramError::NoncanonicalLength
         );
         // expected length that is not whole rows
         assert_eq!(
-            decode(CODEC_ROWDELTA_MONO1, &[254, 0], 33).unwrap_err(),
+            decode(CODEC_ROWDELTA_MONO1, &[254, 0], 33, 32).unwrap_err(),
             BaogramError::NoncanonicalLength
         );
     }
@@ -443,18 +452,18 @@ mod tests {
             state ^= state << 5;
             img.push((state & 0xff) as u8);
         }
-        let (codec, enc) = encode_best(&img);
+        let (codec, enc) = encode_best(&img, 256, 240);
         assert_eq!(codec, CODEC_RAW_MONO1);
         assert_eq!(enc, img);
         // and decode() enforces the canonicality rule for PackBits
         assert_eq!(
-            decode(CODEC_PACKBITS_MONO1, &vec![0u8; MONO1_PACKED_LEN], MONO1_PACKED_LEN).unwrap_err(),
+            decode(CODEC_PACKBITS_MONO1, &vec![0u8; MONO1_PACKED_LEN], MONO1_PACKED_LEN, 32).unwrap_err(),
             BaogramError::NoncanonicalLength
         );
     }
 
     #[test]
     fn unknown_codec_rejected() {
-        assert_eq!(decode(9, &[], 0).unwrap_err(), BaogramError::UnknownCodec);
+        assert_eq!(decode(9, &[], 32, 32).unwrap_err(), BaogramError::UnknownCodec);
     }
 }

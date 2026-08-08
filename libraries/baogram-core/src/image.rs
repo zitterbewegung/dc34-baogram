@@ -132,6 +132,135 @@ impl core::fmt::Debug for Mono1Image {
     }
 }
 
+/// Width of a small-format (pixel format 2) image in pixels.
+pub const SMALL_WIDTH: usize = 128;
+/// Height of a small-format image in pixels.
+pub const SMALL_HEIGHT: usize = 120;
+/// Pixels (and bytes of 8-bit grayscale) in a small frame.
+pub const SMALL_PIXELS: usize = SMALL_WIDTH * SMALL_HEIGHT; // 15,360
+/// Packed length of a small 1-bit image: 128/8 * 120.
+pub const SMALL_PACKED_LEN: usize = SMALL_WIDTH / 8 * SMALL_HEIGHT; // 1,920
+/// Bytes per packed small row.
+pub const SMALL_ROW_BYTES: usize = SMALL_WIDTH / 8; // 16
+
+/// A small-format 1-bit image (128x120, pixel format 2) — the badge
+/// display's native resolution. Same packing conventions as
+/// [`Mono1Image`]. Posts in this format are ~4x smaller before
+/// compression, which is what makes single-digit QR-frame shares
+/// possible; nothing is lost on the 128x128 badge screen.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Mono1Small {
+    data: Box<[u8; SMALL_PACKED_LEN]>,
+}
+
+impl Mono1Small {
+    /// Wrap exactly SMALL_PACKED_LEN packed bytes.
+    pub fn from_packed(packed: &[u8]) -> Result<Self> {
+        if packed.len() != SMALL_PACKED_LEN {
+            return Err(BaogramError::BadPackedSize);
+        }
+        let mut data = Box::new([0u8; SMALL_PACKED_LEN]);
+        data.copy_from_slice(packed);
+        Ok(Mono1Small { data })
+    }
+
+    pub fn packed(&self) -> &[u8; SMALL_PACKED_LEN] {
+        &self.data
+    }
+
+    #[inline]
+    pub fn get(&self, x: usize, y: usize) -> bool {
+        debug_assert!(x < SMALL_WIDTH && y < SMALL_HEIGHT);
+        self.data[y * SMALL_ROW_BYTES + x / 8] & (0x80 >> (x % 8)) != 0
+    }
+
+    /// Quantize a full 256x240 grayscale frame to a small image: 2x2 box
+    /// average in the grayscale domain (integer floor division), then the
+    /// deterministic mean threshold over the downscaled frame. Averaging
+    /// before thresholding preserves tone better than thresholding first.
+    pub fn from_gray(gray: &[u8], threshold_override: Option<u8>) -> Result<Self> {
+        if gray.len() != IMAGE_PIXELS {
+            return Err(BaogramError::BadFrameSize);
+        }
+        let mut small_gray = vec![0u8; SMALL_PIXELS];
+        for y in 0..SMALL_HEIGHT {
+            for x in 0..SMALL_WIDTH {
+                let a = gray[(y * 2) * IMAGE_WIDTH + x * 2] as u32;
+                let b = gray[(y * 2) * IMAGE_WIDTH + x * 2 + 1] as u32;
+                let c = gray[(y * 2 + 1) * IMAGE_WIDTH + x * 2] as u32;
+                let d = gray[(y * 2 + 1) * IMAGE_WIDTH + x * 2 + 1] as u32;
+                small_gray[y * SMALL_WIDTH + x] = ((a + b + c + d) / 4) as u8;
+            }
+        }
+        let threshold = match threshold_override {
+            Some(t) => t,
+            None => {
+                let sum: u64 = small_gray.iter().map(|&p| p as u64).sum();
+                (sum / small_gray.len() as u64) as u8
+            }
+        };
+        let mut data = Box::new([0u8; SMALL_PACKED_LEN]);
+        for y in 0..SMALL_HEIGHT {
+            for x in 0..SMALL_WIDTH {
+                if small_gray[y * SMALL_WIDTH + x] > threshold {
+                    data[y * SMALL_ROW_BYTES + x / 8] |= 0x80 >> (x % 8);
+                }
+            }
+        }
+        Ok(Mono1Small { data })
+    }
+
+    /// 3x3 majority despeckle (border coordinates clamp/replicate): a
+    /// pixel becomes white iff at least 5 of the 9 samples are white.
+    /// Removes the near-threshold salt-and-pepper noise that breaks
+    /// run-length compression; applied at capture time, before signing.
+    pub fn despeckle(&self) -> Mono1Small {
+        let mut out = Box::new([0u8; SMALL_PACKED_LEN]);
+        for y in 0..SMALL_HEIGHT {
+            for x in 0..SMALL_WIDTH {
+                let mut white = 0u32;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let sx = (x as i32 + dx).clamp(0, SMALL_WIDTH as i32 - 1) as usize;
+                        let sy = (y as i32 + dy).clamp(0, SMALL_HEIGHT as i32 - 1) as usize;
+                        if self.get(sx, sy) {
+                            white += 1;
+                        }
+                    }
+                }
+                if white >= 5 {
+                    out[y * SMALL_ROW_BYTES + x / 8] |= 0x80 >> (x % 8);
+                }
+            }
+        }
+        Mono1Small { data: out }
+    }
+
+    /// Pixel-double to the full 256x240 format (each small pixel becomes a
+    /// 2x2 block) so every full-resolution rendering path applies
+    /// unchanged. Lossless with respect to the small image's content.
+    pub fn to_full(&self) -> Mono1Image {
+        let mut full = Mono1Image::from_packed(&[0u8; MONO1_PACKED_LEN]).unwrap();
+        for y in 0..SMALL_HEIGHT {
+            for x in 0..SMALL_WIDTH {
+                if self.get(x, y) {
+                    full.set(x * 2, y * 2, true);
+                    full.set(x * 2 + 1, y * 2, true);
+                    full.set(x * 2, y * 2 + 1, true);
+                    full.set(x * 2 + 1, y * 2 + 1, true);
+                }
+            }
+        }
+        full
+    }
+}
+
+impl core::fmt::Debug for Mono1Small {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Mono1Small({}x{})", SMALL_WIDTH, SMALL_HEIGHT)
+    }
+}
+
 /// Mean luminance of the frame via integer division — the deterministic
 /// global threshold used when no override is supplied.
 pub fn global_threshold(gray: &[u8]) -> u8 {

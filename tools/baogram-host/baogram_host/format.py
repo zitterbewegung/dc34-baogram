@@ -10,11 +10,30 @@ import struct
 from dataclasses import dataclass
 
 from . import codec, crypto
-from .image import IMAGE_HEIGHT, IMAGE_WIDTH, MONO1_PACKED_LEN
+from .image import (
+    IMAGE_HEIGHT,
+    IMAGE_WIDTH,
+    MONO1_PACKED_LEN,
+    SMALL_HEIGHT,
+    SMALL_PACKED_LEN,
+    SMALL_WIDTH,
+    small_to_full,
+)
 
 POST_MAGIC = b"BGRM"
 POST_VERSION = 1
 PIXEL_FORMAT_MONO1 = 1
+PIXEL_FORMAT_MONO1_SMALL = 2
+
+
+def format_geometry(pixel_format: int) -> tuple[int, int, int] | None:
+    """(width, height, packed length) for a pixel format, if supported."""
+    if pixel_format == PIXEL_FORMAT_MONO1:
+        return (IMAGE_WIDTH, IMAGE_HEIGHT, MONO1_PACKED_LEN)
+    if pixel_format == PIXEL_FORMAT_MONO1_SMALL:
+        return (SMALL_WIDTH, SMALL_HEIGHT, SMALL_PACKED_LEN)
+    return None
+
 
 HANDLE_MAX_BYTES = 24
 CAPTION_MAX_BYTES = 64
@@ -33,6 +52,7 @@ class FormatError(ValueError):
 
 
 def _canonical_header(
+    pixel_format: int,
     codec_id: int,
     seq: int,
     author_pubkey: bytes,
@@ -40,26 +60,30 @@ def _canonical_header(
     caption_len: int,
     encoded_len: int,
 ) -> bytes:
+    geometry = format_geometry(pixel_format)
+    assert geometry is not None, "supported pixel format"
+    width, height, unc_len = geometry
     return (
         POST_MAGIC
         + struct.pack(
             ">BBBBHH",
             POST_VERSION,
-            PIXEL_FORMAT_MONO1,
+            pixel_format,
             codec_id,
             0,  # flags
-            IMAGE_WIDTH,
-            IMAGE_HEIGHT,
+            width,
+            height,
         )
         + struct.pack(">Q", seq)
         + author_pubkey
         + struct.pack(">BB", handle_len, caption_len)
-        + struct.pack(">II", MONO1_PACKED_LEN, encoded_len)
+        + struct.pack(">II", unc_len, encoded_len)
     )
 
 
 @dataclass
 class Post:
+    pixel_format: int
     codec: int
     seq: int
     author_pubkey: bytes
@@ -78,23 +102,64 @@ class Post:
         caption: str,
         packed_image: bytes,
     ) -> "Post":
+        """Build and sign a full-format (256x240, pixel format 1) post."""
         if len(handle.encode()) > HANDLE_MAX_BYTES:
             raise FormatError("field_too_long", "handle > 24 bytes")
         if len(caption.encode()) > CAPTION_MAX_BYTES:
             raise FormatError("field_too_long", "caption > 64 bytes")
         if len(packed_image) != MONO1_PACKED_LEN:
             raise FormatError("bad_packed_size")
-        codec_id, encoded = codec.encode_best(packed_image)
+        codec_id, encoded = codec.encode_best(packed_image, IMAGE_WIDTH, IMAGE_HEIGHT)
+        return cls._sign_new(
+            identity, PIXEL_FORMAT_MONO1, codec_id, seq, handle, caption, encoded
+        )
+
+    @classmethod
+    def create_small(
+        cls,
+        identity: crypto.Identity,
+        seq: int,
+        handle: str,
+        caption: str,
+        packed_image: bytes,
+    ) -> "Post":
+        """Build and sign a small-format (128x120, pixel format 2) post.
+        ~4x less raw data than the full format; nothing is lost on the
+        badge's 128x128 display."""
+        if len(handle.encode()) > HANDLE_MAX_BYTES:
+            raise FormatError("field_too_long", "handle > 24 bytes")
+        if len(caption.encode()) > CAPTION_MAX_BYTES:
+            raise FormatError("field_too_long", "caption > 64 bytes")
+        if len(packed_image) != SMALL_PACKED_LEN:
+            raise FormatError("bad_packed_size")
+        codec_id, encoded = codec.encode_best(packed_image, SMALL_WIDTH, SMALL_HEIGHT)
+        return cls._sign_new(
+            identity, PIXEL_FORMAT_MONO1_SMALL, codec_id, seq, handle, caption, encoded
+        )
+
+    @classmethod
+    def _sign_new(
+        cls,
+        identity: crypto.Identity,
+        pixel_format: int,
+        codec_id: int,
+        seq: int,
+        handle: str,
+        caption: str,
+        encoded: bytes,
+    ) -> "Post":
         pub = identity.public_key
         header = _canonical_header(
-            codec_id, seq, pub, len(handle.encode()), len(caption.encode()), len(encoded)
+            pixel_format, codec_id, seq, pub,
+            len(handle.encode()), len(caption.encode()), len(encoded),
         )
         digest = crypto.post_digest(header, handle.encode(), caption.encode(), encoded)
         signature = identity.sign_digest(digest)
-        return cls(codec_id, seq, pub, handle, caption, encoded, digest, signature)
+        return cls(pixel_format, codec_id, seq, pub, handle, caption, encoded, digest, signature)
 
     def serialize(self) -> bytes:
         header = _canonical_header(
+            self.pixel_format,
             self.codec,
             self.seq,
             self.author_pubkey,
@@ -123,19 +188,18 @@ class Post:
             raise FormatError("bad_magic")
         if data[4] != POST_VERSION:
             raise FormatError("unknown_version")
-        if data[5] != PIXEL_FORMAT_MONO1:
+        pixel_format = data[5]
+        geometry = format_geometry(pixel_format)
+        if geometry is None:
             raise FormatError("unknown_pixel_format")
+        fmt_width, fmt_height, fmt_unc_len = geometry
         codec_id = data[6]
-        if codec_id not in (
-            codec.CODEC_RAW_MONO1,
-            codec.CODEC_PACKBITS_MONO1,
-            codec.CODEC_ROWDELTA_MONO1,
-        ):
+        if codec_id > codec.CODEC_CTXARITH_MONO1:
             raise FormatError("unknown_codec")
         if data[7] != 0:
             raise FormatError("unknown_flags")
         width, height = struct.unpack(">HH", data[8:12])
-        if width != IMAGE_WIDTH or height != IMAGE_HEIGHT:
+        if width != fmt_width or height != fmt_height:
             raise FormatError("unsupported_dimensions")
         (seq,) = struct.unpack(">Q", data[12:20])
         author_pubkey = data[20:52]
@@ -144,7 +208,7 @@ class Post:
         if handle_len > HANDLE_MAX_BYTES or caption_len > CAPTION_MAX_BYTES:
             raise FormatError("field_too_long")
         unc_len, enc_len = struct.unpack(">II", data[54:62])
-        if unc_len != MONO1_PACKED_LEN:
+        if unc_len != fmt_unc_len:
             raise FormatError("noncanonical_length", "uncompressed length")
         if enc_len > ENCODED_IMAGE_MAX_BYTES:
             raise FormatError("noncanonical_length", "encoded length")
@@ -171,7 +235,7 @@ class Post:
             raise FormatError("invalid_utf8") from e
 
         header = _canonical_header(
-            codec_id, seq, author_pubkey, handle_len, caption_len, enc_len
+            pixel_format, codec_id, seq, author_pubkey, handle_len, caption_len, enc_len
         )
         computed = crypto.post_digest(header, handle_bytes, caption_bytes, encoded_image)
         if computed != digest:
@@ -181,17 +245,28 @@ class Post:
         # image must decode to exactly the packed length (also enforces the
         # compressed-strictly-smaller canonical rule)
         try:
-            codec.decode(codec_id, encoded_image, MONO1_PACKED_LEN)
+            codec.decode(codec_id, encoded_image, fmt_unc_len, fmt_width // 8)
         except codec.CodecError as e:
             raise FormatError("codec_error", str(e)) from e
 
         return cls(
-            codec_id, seq, bytes(author_pubkey), handle, caption,
+            pixel_format, codec_id, seq, bytes(author_pubkey), handle, caption,
             bytes(encoded_image), bytes(digest), bytes(signature),
         )
 
     def decode_image(self) -> bytes:
-        return codec.decode(self.codec, self.encoded_image, MONO1_PACKED_LEN)
+        """Decode the image payload to full-resolution packed Mono1 bytes
+        (7,680). Small-format posts are pixel-doubled (lossless for their
+        content), so every full-resolution rendering path applies
+        unchanged."""
+        geometry = format_geometry(self.pixel_format)
+        if geometry is None:
+            raise FormatError("unknown_pixel_format")
+        width, _height, unc_len = geometry
+        packed = codec.decode(self.codec, self.encoded_image, unc_len, width // 8)
+        if self.pixel_format == PIXEL_FORMAT_MONO1_SMALL:
+            return small_to_full(packed)
+        return packed
 
     @property
     def post_id(self) -> bytes:

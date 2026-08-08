@@ -41,8 +41,8 @@ pub enum PendingSource {
 /// A post awaiting the user's Save/Retake/Discard decision.
 pub struct Pending {
     pub source: PendingSource,
-    /// For `Captured`: the quantized image, signed at save time.
-    pub image: Option<baogram_core::image::Mono1Image>,
+    /// For `Captured`: the quantized small-format image, signed at save time.
+    pub image: Option<baogram_core::image::Mono1Small>,
     /// For `Received`: the verified post and its serialized bytes.
     pub post: Option<(Post, Vec<u8>)>,
 }

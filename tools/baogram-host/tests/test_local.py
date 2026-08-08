@@ -5,7 +5,12 @@ import random
 import pytest
 
 from baogram_host import codec, crypto
-from baogram_host.format import FormatError, Post
+from baogram_host.format import (
+    FormatError,
+    PIXEL_FORMAT_MONO1,
+    PIXEL_FORMAT_MONO1_SMALL,
+    Post,
+)
 from baogram_host.fragments import (
     Fragment,
     FragmentError,
@@ -21,10 +26,20 @@ from baogram_host.fragments import (
 )
 from baogram_host.image import (
     IMAGE_HEIGHT,
+    IMAGE_PIXELS,
     IMAGE_WIDTH,
     MONO1_PACKED_LEN,
+    MONO1_ROW_BYTES,
+    SMALL_HEIGHT,
+    SMALL_PACKED_LEN,
+    SMALL_ROW_BYTES,
+    SMALL_WIDTH,
+    ImageError,
+    despeckle_small,
     quantize,
     save_mono1_as_png,
+    small_from_gray,
+    small_to_full,
     synthetic_test_frame,
     unpack_to_gray,
 )
@@ -147,26 +162,31 @@ def test_rowdelta_filter_roundtrip_patterns():
         _prand(32 * 240, 0xC0DEC),                 # deterministic noise
     )
     for p in patterns:
-        f = codec.rowdelta_filter(p)
+        f = codec.rowdelta_filter(p, 32)
         assert len(f) == len(p)
         assert f[:32] == p[:32]
-        assert codec.rowdelta_unfilter(f) == p
+        assert codec.rowdelta_unfilter(f, 32) == p
     # filter semantics: alternating aa/55 rows filter to 0xff after row 0
-    f = codec.rowdelta_filter((b"\xaa" * 32 + b"\x55" * 32) * 120)
+    f = codec.rowdelta_filter((b"\xaa" * 32 + b"\x55" * 32) * 120, 32)
     assert f[:32] == b"\xaa" * 32
     assert f[32:] == b"\xff" * (32 * 239)
+    # the small-format 16-byte stride filters at the small row boundary
+    f = codec.rowdelta_filter((b"\xaa" * 16 + b"\x55" * 16) * 120, 16)
+    assert f[:16] == b"\xaa" * 16
+    assert f[16:] == b"\xff" * (16 * 239)
+    assert codec.rowdelta_unfilter(f, 16) == (b"\xaa" * 16 + b"\x55" * 16) * 120
     with pytest.raises(codec.CodecError):
-        codec.rowdelta_filter(b"\x00" * 33)  # not a multiple of the stride
+        codec.rowdelta_filter(b"\x00" * 33, 32)  # not a multiple of the stride
 
 
 def test_rowdelta_vertically_constant_image_picks_codec2():
     # a noise row repeated 240x: horizontally incompressible (PackBits
     # loses), vertically constant (RowDelta filters rows 1.. to zero)
     packed = _prand(32, 7) * 240
-    codec_id, enc = codec.encode_best(packed)
+    codec_id, enc = codec.encode_best(packed, IMAGE_WIDTH, IMAGE_HEIGHT)
     assert codec_id == codec.CODEC_ROWDELTA_MONO1
     assert len(enc) < len(codec.packbits_encode(packed))
-    assert codec.decode(codec_id, enc, len(packed)) == packed
+    assert codec.decode(codec_id, enc, len(packed), 32) == packed
     # ...and through the full Post container
     ident = crypto.Identity(SEED)
     post = Post.create(ident, 3, "bob", "vertical", packed)
@@ -178,22 +198,207 @@ def test_rowdelta_vertically_constant_image_picks_codec2():
 
 def test_rowdelta_tie_prefers_packbits():
     # rows each solid with a per-row varying byte: PackBits and RowDelta
-    # both encode to one run per row -> exact tie -> codec 1 wins
+    # both encode to one run per row -> exact tie -> the LOWEST codec id
+    # (1) wins; the ctx codec loses outright on this pattern
     packed = b"".join(bytes([y]) * 32 for y in range(240))
-    codec_id, enc = codec.encode_best(packed)
+    codec_id, enc = codec.encode_best(packed, IMAGE_WIDTH, IMAGE_HEIGHT)
     assert codec_id == codec.CODEC_PACKBITS_MONO1
-    assert len(enc) == len(codec.packbits_encode(codec.rowdelta_filter(packed)))
+    assert len(enc) == len(codec.packbits_encode(codec.rowdelta_filter(packed, 32)))
 
 
 def test_rowdelta_decode_canonicality():
     # not strictly smaller than raw
     with pytest.raises(codec.CodecError):
-        codec.decode(codec.CODEC_ROWDELTA_MONO1, b"\x00" * 64, 64)
+        codec.decode(codec.CODEC_ROWDELTA_MONO1, b"\x00" * 64, 64, 32)
     with pytest.raises(codec.CodecError):
-        codec.decode(codec.CODEC_ROWDELTA_MONO1, b"\x00" * 65, 64)
+        codec.decode(codec.CODEC_ROWDELTA_MONO1, b"\x00" * 65, 64, 32)
     # expected_len not a multiple of the 32-byte row stride
     with pytest.raises(codec.CodecError):
-        codec.decode(codec.CODEC_ROWDELTA_MONO1, b"\xe0\x00", 33)
+        codec.decode(codec.CODEC_ROWDELTA_MONO1, b"\xe0\x00", 33, 32)
+
+
+def test_decode_row_stride_rejections():
+    # the stride checks run up front for EVERY codec id, valid or not
+    for cid in (0, 1, 2, 3, 9):
+        with pytest.raises(codec.CodecError):
+            codec.decode(cid, b"\x00" * 10, 64, 0)  # zero row stride
+        with pytest.raises(codec.CodecError):
+            codec.decode(cid, b"\x00" * 10, 33, 32)  # not whole rows
+    # a valid stride still enforces the per-codec rules
+    assert codec.decode(codec.CODEC_RAW_MONO1, b"\x00" * 64, 64, 32) == b"\x00" * 64
+    with pytest.raises(codec.CodecError):
+        codec.decode(codec.CODEC_RAW_MONO1, b"\x00" * 63, 64, 32)
+    with pytest.raises(codec.CodecError):
+        codec.decode(9, b"", 32, 32)  # unknown codec
+
+
+# ---------------------------------------------------------------------------
+# CtxArithMono1 (codec 3) inside encode_best / decode
+# ---------------------------------------------------------------------------
+
+
+def _small_pattern(fn) -> bytes:
+    out = bytearray(SMALL_PACKED_LEN)
+    for y in range(SMALL_HEIGHT):
+        for x in range(SMALL_WIDTH):
+            if fn(x, y):
+                out[y * SMALL_ROW_BYTES + (x >> 3)] |= 0x80 >> (x & 7)
+    return bytes(out)
+
+
+def test_encode_best_three_way_ctx_wins():
+    # a filled disc has 2D structure the 1D row codecs cannot exploit:
+    # the context-modeled codec must win the three-way pick
+    disc = _small_pattern(lambda x, y: (x - 64) ** 2 + (y - 60) ** 2 < 50 ** 2)
+    codec_id, enc = codec.encode_best(disc, SMALL_WIDTH, SMALL_HEIGHT)
+    assert codec_id == codec.CODEC_CTXARITH_MONO1
+    assert len(enc) < len(codec.packbits_encode(disc))
+    assert len(enc) < len(codec.packbits_encode(codec.rowdelta_filter(disc, 16)))
+    assert codec.decode(codec_id, enc, SMALL_PACKED_LEN, 16) == disc
+    # ...and through the full Post container
+    ident = crypto.Identity(SEED)
+    post = Post.create_small(ident, 4, "ctx", "disc", disc)
+    assert post.codec == codec.CODEC_CTXARITH_MONO1
+    parsed = Post.parse(post.serialize())
+    assert parsed.codec == codec.CODEC_CTXARITH_MONO1
+    assert parsed.decode_image() == small_to_full(disc)
+
+
+def test_ctx_decode_canonicality():
+    # encoded length not strictly smaller than raw is rejected for codec 3
+    with pytest.raises(codec.CodecError):
+        codec.decode(codec.CODEC_CTXARITH_MONO1, b"\x00" * SMALL_PACKED_LEN, SMALL_PACKED_LEN, 16)
+
+
+# ---------------------------------------------------------------------------
+# Small format (pixel format 2): quantize / despeckle / pixel-double
+# ---------------------------------------------------------------------------
+
+# SHA-256 of despeckle_small(small_from_gray(synthetic_test_frame())) — the
+# canonical small capture pipeline output; the identical constant is pinned
+# in the Rust test suite (cross-language determinism lock).
+DESPECKLED_SMALL_SHA256 = "a81929e4959f2141a03048f55d29f91c387e6e680a1f9a3222776c42d5d72cac"
+
+
+def _small_get(packed: bytes, x: int, y: int) -> bool:
+    return bool(packed[y * SMALL_ROW_BYTES + (x >> 3)] & (0x80 >> (x & 7)))
+
+
+def _full_get(packed: bytes, x: int, y: int) -> bool:
+    return bool(packed[y * MONO1_ROW_BYTES + (x >> 3)] & (0x80 >> (x & 7)))
+
+
+def test_small_from_gray_box_average_and_threshold():
+    # uniform frames: mean threshold t equals the pixel value, and v > t
+    # is false -> all black (the documented deterministic edge behavior)
+    assert small_from_gray(b"\x00" * IMAGE_PIXELS) == b"\x00" * SMALL_PACKED_LEN
+    assert small_from_gray(b"\xff" * IMAGE_PIXELS) == b"\x00" * SMALL_PACKED_LEN
+    # with an explicit low threshold the all-white frame stays all white
+    assert small_from_gray(b"\xff" * IMAGE_PIXELS, 0) == b"\xff" * SMALL_PACKED_LEN
+    # 2x2 integer box average: block values 10,20,30,45 average to
+    # floor(105/4) = 26 -> white iff threshold < 26
+    gray = bytearray(IMAGE_PIXELS)
+    gray[0], gray[1] = 10, 20
+    gray[IMAGE_WIDTH], gray[IMAGE_WIDTH + 1] = 30, 45
+    assert _small_get(small_from_gray(bytes(gray), 25), 0, 0)
+    assert not _small_get(small_from_gray(bytes(gray), 26), 0, 0)
+    with pytest.raises(ImageError):
+        small_from_gray(b"\x00" * 100)
+
+
+def test_despeckle_small_majority_and_border_clamp():
+    solid = b"\xff" * SMALL_PACKED_LEN
+    assert despeckle_small(solid) == solid
+    assert despeckle_small(b"\x00" * SMALL_PACKED_LEN) == b"\x00" * SMALL_PACKED_LEN
+    # a single isolated white pixel (1 of 9) is removed
+    lone = _small_pattern(lambda x, y: (x, y) == (60, 60))
+    assert despeckle_small(lone) == b"\x00" * SMALL_PACKED_LEN
+    # a single black hole in white (8 of 9 white) is filled
+    hole = _small_pattern(lambda x, y: (x, y) != (60, 60))
+    assert despeckle_small(hole) == solid
+    # border clamping: at the (0,0) corner the clamped 3x3 samples are
+    # (0,0)x4, (1,0)x2, (0,1)x2, (1,1)x1 — a lone corner pixel counts 4
+    # of 9 and is removed; corner + both edge neighbors count 8 and stay
+    corner = _small_pattern(lambda x, y: (x, y) == (0, 0))
+    assert despeckle_small(corner) == b"\x00" * SMALL_PACKED_LEN
+    l_shape = _small_pattern(lambda x, y: (x, y) in ((0, 0), (1, 0), (0, 1)))
+    assert _small_get(despeckle_small(l_shape), 0, 0)
+    with pytest.raises(ImageError):
+        despeckle_small(b"\x00" * (SMALL_PACKED_LEN - 1))
+
+
+def test_small_capture_pipeline_is_deterministic():
+    import hashlib
+
+    small = small_from_gray(synthetic_test_frame())
+    assert len(small) == SMALL_PACKED_LEN
+    assert small_from_gray(synthetic_test_frame()) == small
+    despeckled = despeckle_small(small)
+    digest = hashlib.sha256(despeckled).hexdigest()
+    print(f"despeckled small SHA-256: {digest}")
+    assert digest == DESPECKLED_SMALL_SHA256
+    assert despeckle_small(small) == despeckled
+
+
+def test_small_to_full_pixel_doubling():
+    small = despeckle_small(small_from_gray(synthetic_test_frame()))
+    full = small_to_full(small)
+    assert len(full) == MONO1_PACKED_LEN
+    # every small pixel becomes a 2x2 block, exactly
+    for y in range(SMALL_HEIGHT):
+        for x in range(SMALL_WIDTH):
+            v = _small_get(small, x, y)
+            assert _full_get(full, 2 * x, 2 * y) == v
+            assert _full_get(full, 2 * x + 1, 2 * y) == v
+            assert _full_get(full, 2 * x, 2 * y + 1) == v
+            assert _full_get(full, 2 * x + 1, 2 * y + 1) == v
+    # spot-check the packing: a lone white small pixel at (0,0) doubles
+    # to 0xC0 bytes at the start of full rows 0 and 1
+    lone = _small_pattern(lambda x, y: (x, y) == (0, 0))
+    doubled = small_to_full(lone)
+    assert doubled[0] == 0xC0
+    assert doubled[MONO1_ROW_BYTES] == 0xC0
+    assert sum(doubled) == 2 * 0xC0
+    with pytest.raises(ImageError):
+        small_to_full(b"\x00" * MONO1_PACKED_LEN)
+
+
+def test_small_post_roundtrip():
+    ident = crypto.Identity(SEED)
+    small = despeckle_small(small_from_gray(synthetic_test_frame()))
+    post = Post.create_small(ident, 9, "smol", "compact post", small)
+    assert post.pixel_format == PIXEL_FORMAT_MONO1_SMALL
+    data = post.serialize()
+    parsed = Post.parse(data)
+    assert parsed == post
+    # decode_image pixel-doubles small posts to the full 256x240 format
+    assert parsed.decode_image() == small_to_full(small)
+    # a small post is drastically smaller than the full-format equivalent
+    full_post = Post.create(ident, 9, "smol", "compact post", quantize(synthetic_test_frame()))
+    assert full_post.pixel_format == PIXEL_FORMAT_MONO1
+    assert len(data) < len(full_post.serialize())
+
+
+def test_small_post_dimension_mismatch_rejected():
+    ident = crypto.Identity(SEED)
+    small = despeckle_small(small_from_gray(synthetic_test_frame()))
+    post = Post.create_small(ident, 9, "", "", small)
+    bad = bytearray(post.serialize())
+    # claim full-format dimensions on a small post
+    bad[8:10] = (256).to_bytes(2, "big")
+    with pytest.raises(FormatError) as e:
+        Post.parse(bytes(bad))
+    assert e.value.reason == "unsupported_dimensions"
+
+
+def test_create_rejects_wrong_packed_size():
+    ident = crypto.Identity(SEED)
+    with pytest.raises(FormatError) as e:
+        Post.create(ident, 0, "", "", b"\x00" * SMALL_PACKED_LEN)
+    assert e.value.reason == "bad_packed_size"
+    with pytest.raises(FormatError) as e:
+        Post.create_small(ident, 0, "", "", b"\x00" * MONO1_PACKED_LEN)
+    assert e.value.reason == "bad_packed_size"
 
 
 # ---------------------------------------------------------------------------

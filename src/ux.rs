@@ -1596,9 +1596,13 @@ impl VaultUi {
         };
         let (bits, label) = match pending.source {
             crate::baogram::PendingSource::Captured => {
-                let img = pending.image.as_ref().expect("captured pending must hold an image");
+                let img = pending
+                    .image
+                    .as_ref()
+                    .expect("captured pending must hold an image")
+                    .to_full();
                 (
-                    crate::baogram::render::mono1_to_display_bitmap(img),
+                    crate::baogram::render::mono1_to_display_bitmap(&img),
                     "🔥 save   ← retake".to_string(),
                 )
             }

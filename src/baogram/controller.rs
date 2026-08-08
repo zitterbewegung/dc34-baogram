@@ -55,7 +55,7 @@ pub fn save_pending(shared: &Shared, pddb: &Pddb) -> String {
             let t0 = tt.elapsed_ms();
             let seq = s.identity.next_seq(pddb);
             // caption is empty in the MVP capture flow
-            let post = match Post::create(&signer, seq, &handle, "", image) {
+            let post = match Post::create_small(&signer, seq, &handle, "", image) {
                 Ok(p) => p,
                 Err(e) => {
                     s.pending = Some(pending);
@@ -66,9 +66,9 @@ pub fn save_pending(shared: &Shared, pddb: &Pddb) -> String {
             let serialized = post.serialize();
             log::info!(
                 "baogram save: raw {} -> encoded {} bytes (ratio {:.2}), sign+digest {} ms, total {} bytes",
-                baogram_core::image::MONO1_PACKED_LEN,
+                baogram_core::image::SMALL_PACKED_LEN,
                 post.encoded_image.len(),
-                post.encoded_image.len() as f32 / baogram_core::image::MONO1_PACKED_LEN as f32,
+                post.encoded_image.len() as f32 / baogram_core::image::SMALL_PACKED_LEN as f32,
                 t1 - t0,
                 serialized.len()
             );
@@ -105,7 +105,7 @@ pub fn save_pending(shared: &Shared, pddb: &Pddb) -> String {
 }
 
 /// Stash a freshly captured image as the pending post.
-pub fn set_pending_capture(shared: &Shared, image: baogram_core::image::Mono1Image) {
+pub fn set_pending_capture(shared: &Shared, image: baogram_core::image::Mono1Small) {
     let mut s = shared.lock().unwrap();
     s.pending = Some(Pending { source: PendingSource::Captured, image: Some(image), post: None });
 }

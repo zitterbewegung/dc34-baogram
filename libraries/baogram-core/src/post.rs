@@ -9,16 +9,16 @@
 //! ------  ---  -----
 //!      0    4  magic "BGRM"
 //!      4    1  version               (= 1)
-//!      5    1  pixel_format          (= 1: Mono1 packed MSB-first, 1 = white)
-//!      6    1  codec                 (0 = RawMono1, 1 = PackBitsMono1, 2 = RowDeltaMono1)
+//!      5    1  pixel_format          (1 = 256x240 full, 2 = 128x120 small; Mono1 packed MSB-first, 1 = white)
+//!      6    1  codec                 (0 = RawMono1, 1 = PackBitsMono1, 2 = RowDeltaMono1, 3 = CtxArithMono1)
 //!      7    1  flags                 (= 0; reserved bits must be zero)
-//!      8    2  width                 (= 256)
-//!     10    2  height                (= 240)
+//!      8    2  width                 (256 full / 128 small)
+//!     10    2  height                (240 full / 120 small)
 //!     12    8  seq                   (persistent author sequence number)
 //!     20   32  author_pubkey         (Ed25519)
 //!     52    1  handle_len            (0..=24)
 //!     53    1  caption_len           (0..=64)
-//!     54    4  image_uncompressed_len (= 7,680)
+//!     54    4  image_uncompressed_len (7,680 full / 1,920 small)
 //!     58    4  image_encoded_len     (<= 61,440)
 //!  -- end of canonical header (62 bytes) --
 //!     62    m  handle                (UTF-8, m = handle_len)
@@ -34,14 +34,28 @@
 use crate::codec;
 use crate::crypto::{self, DIGEST_LEN, POST_ID_LEN, PUBKEY_LEN, SHORT_ID_LEN, SIGNATURE_LEN};
 use crate::error::{BaogramError, Result};
-use crate::image::{IMAGE_HEIGHT, IMAGE_WIDTH, MONO1_PACKED_LEN, Mono1Image};
+use crate::image::{
+    IMAGE_HEIGHT, IMAGE_WIDTH, MONO1_PACKED_LEN, Mono1Image, Mono1Small, SMALL_HEIGHT,
+    SMALL_PACKED_LEN, SMALL_WIDTH,
+};
 
 /// Post container magic.
 pub const POST_MAGIC: [u8; 4] = *b"BGRM";
 /// Protocol version implemented by this library.
 pub const POST_VERSION: u8 = 1;
-/// Pixel format 1: packed 1-bit monochrome, MSB-first, row-major, 1 = white.
+/// Pixel format 1: 256x240 packed 1-bit monochrome, MSB-first, 1 = white.
 pub const PIXEL_FORMAT_MONO1: u8 = 1;
+/// Pixel format 2: 128x120 (the badge display's native resolution).
+pub const PIXEL_FORMAT_MONO1_SMALL: u8 = 2;
+
+/// (width, height, packed length) for a pixel format, if supported.
+pub fn format_geometry(pixel_format: u8) -> Option<(usize, usize, usize)> {
+    match pixel_format {
+        PIXEL_FORMAT_MONO1 => Some((IMAGE_WIDTH, IMAGE_HEIGHT, MONO1_PACKED_LEN)),
+        PIXEL_FORMAT_MONO1_SMALL => Some((SMALL_WIDTH, SMALL_HEIGHT, SMALL_PACKED_LEN)),
+        _ => None,
+    }
+}
 
 /// Maximum UTF-8 bytes in a handle.
 pub const HANDLE_MAX_BYTES: usize = 24;
@@ -59,6 +73,7 @@ pub const TRAILER_LEN: usize = DIGEST_LEN + SIGNATURE_LEN;
 /// A parsed-and-verified (or about-to-be-signed) Baogram post.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Post {
+    pub pixel_format: u8,
     pub codec: u8,
     pub seq: u64,
     pub author_pubkey: [u8; PUBKEY_LEN],
@@ -85,6 +100,7 @@ impl core::fmt::Debug for Post {
 }
 
 fn canonical_header(
+    pixel_format: u8,
     codec: u8,
     seq: u64,
     author_pubkey: &[u8; PUBKEY_LEN],
@@ -92,19 +108,20 @@ fn canonical_header(
     caption_len: usize,
     encoded_len: usize,
 ) -> [u8; CANONICAL_HEADER_LEN] {
+    let (width, height, unc_len) = format_geometry(pixel_format).expect("supported pixel format");
     let mut h = [0u8; CANONICAL_HEADER_LEN];
     h[0..4].copy_from_slice(&POST_MAGIC);
     h[4] = POST_VERSION;
-    h[5] = PIXEL_FORMAT_MONO1;
+    h[5] = pixel_format;
     h[6] = codec;
     h[7] = 0; // flags
-    h[8..10].copy_from_slice(&(IMAGE_WIDTH as u16).to_be_bytes());
-    h[10..12].copy_from_slice(&(IMAGE_HEIGHT as u16).to_be_bytes());
+    h[8..10].copy_from_slice(&(width as u16).to_be_bytes());
+    h[10..12].copy_from_slice(&(height as u16).to_be_bytes());
     h[12..20].copy_from_slice(&seq.to_be_bytes());
     h[20..52].copy_from_slice(author_pubkey);
     h[52] = handle_len as u8;
     h[53] = caption_len as u8;
-    h[54..58].copy_from_slice(&(MONO1_PACKED_LEN as u32).to_be_bytes());
+    h[54..58].copy_from_slice(&(unc_len as u32).to_be_bytes());
     h[58..62].copy_from_slice(&(encoded_len as u32).to_be_bytes());
     h
 }
@@ -128,13 +145,53 @@ impl Post {
         if caption.len() > CAPTION_MAX_BYTES {
             return Err(BaogramError::FieldTooLong);
         }
-        let (codec_id, encoded_image) = codec::encode_best(image.packed());
+        let (codec_id, encoded_image) = codec::encode_best(image.packed(), IMAGE_WIDTH, IMAGE_HEIGHT);
+        Self::sign_new(identity, PIXEL_FORMAT_MONO1, codec_id, seq, handle, caption, encoded_image)
+    }
+
+    /// Build and sign a small-format (128x120, pixel format 2) post.
+    /// ~4x less raw data than the full format; nothing is lost on the
+    /// badge's 128x128 display.
+    pub fn create_small(
+        identity: &crypto::Identity,
+        seq: u64,
+        handle: &str,
+        caption: &str,
+        image: &Mono1Small,
+    ) -> Result<Post> {
+        if handle.len() > HANDLE_MAX_BYTES {
+            return Err(BaogramError::FieldTooLong);
+        }
+        if caption.len() > CAPTION_MAX_BYTES {
+            return Err(BaogramError::FieldTooLong);
+        }
+        let (codec_id, encoded_image) = codec::encode_best(image.packed(), SMALL_WIDTH, SMALL_HEIGHT);
+        Self::sign_new(identity, PIXEL_FORMAT_MONO1_SMALL, codec_id, seq, handle, caption, encoded_image)
+    }
+
+    pub(crate) fn sign_new(
+        identity: &crypto::Identity,
+        pixel_format: u8,
+        codec_id: u8,
+        seq: u64,
+        handle: &str,
+        caption: &str,
+        encoded_image: Vec<u8>,
+    ) -> Result<Post> {
         let author_pubkey = identity.public_key();
-        let header =
-            canonical_header(codec_id, seq, &author_pubkey, handle.len(), caption.len(), encoded_image.len());
+        let header = canonical_header(
+            pixel_format,
+            codec_id,
+            seq,
+            &author_pubkey,
+            handle.len(),
+            caption.len(),
+            encoded_image.len(),
+        );
         let digest = crypto::post_digest(&header, handle.as_bytes(), caption.as_bytes(), &encoded_image);
         let signature = identity.sign_digest(&digest);
         Ok(Post {
+            pixel_format,
             codec: codec_id,
             seq,
             author_pubkey,
@@ -149,6 +206,7 @@ impl Post {
     /// Serialize to the canonical byte form.
     pub fn serialize(&self) -> Vec<u8> {
         let header = canonical_header(
+            self.pixel_format,
             self.codec,
             self.seq,
             &self.author_pubkey,
@@ -193,14 +251,12 @@ impl Post {
         if bytes[4] != POST_VERSION {
             return Err(BaogramError::UnknownVersion);
         }
-        if bytes[5] != PIXEL_FORMAT_MONO1 {
+        let pixel_format = bytes[5];
+        let Some((fmt_width, fmt_height, fmt_unc_len)) = format_geometry(pixel_format) else {
             return Err(BaogramError::UnknownPixelFormat);
-        }
+        };
         let codec_id = bytes[6];
-        if codec_id != codec::CODEC_RAW_MONO1
-            && codec_id != codec::CODEC_PACKBITS_MONO1
-            && codec_id != codec::CODEC_ROWDELTA_MONO1
-        {
+        if codec_id > codec::CODEC_CTXARITH_MONO1 {
             return Err(BaogramError::UnknownCodec);
         }
         if bytes[7] != 0 {
@@ -208,7 +264,7 @@ impl Post {
         }
         let width = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
         let height = u16::from_be_bytes([bytes[10], bytes[11]]) as usize;
-        if width != IMAGE_WIDTH || height != IMAGE_HEIGHT {
+        if width != fmt_width || height != fmt_height {
             return Err(BaogramError::UnsupportedDimensions);
         }
         let seq = u64::from_be_bytes(bytes[12..20].try_into().unwrap());
@@ -219,7 +275,7 @@ impl Post {
             return Err(BaogramError::FieldTooLong);
         }
         let unc_len = u32::from_be_bytes(bytes[54..58].try_into().unwrap()) as usize;
-        if unc_len != MONO1_PACKED_LEN {
+        if unc_len != fmt_unc_len {
             return Err(BaogramError::NoncanonicalLength);
         }
         let enc_len = u32::from_be_bytes(bytes[58..62].try_into().unwrap()) as usize;
@@ -249,7 +305,8 @@ impl Post {
         let caption = core::str::from_utf8(caption_bytes).map_err(|_| BaogramError::InvalidUtf8)?.to_string();
 
         // recompute the digest over canonical regions
-        let header = canonical_header(codec_id, seq, &author_pubkey, handle_len, caption_len, enc_len);
+        let header =
+            canonical_header(pixel_format, codec_id, seq, &author_pubkey, handle_len, caption_len, enc_len);
         let computed = crypto::post_digest(&header, handle_bytes, caption_bytes, encoded_image);
         if computed != digest {
             return Err(BaogramError::DigestMismatch);
@@ -258,9 +315,10 @@ impl Post {
 
         // the image must decode to exactly the packed length; the decode also
         // enforces the compressed-strictly-smaller canonicality rule
-        let _ = codec::decode(codec_id, encoded_image, MONO1_PACKED_LEN)?;
+        let _ = codec::decode(codec_id, encoded_image, fmt_unc_len, fmt_width / 8)?;
 
         Ok(Post {
+            pixel_format,
             codec: codec_id,
             seq,
             author_pubkey,
@@ -273,9 +331,17 @@ impl Post {
     }
 
     /// Decode the image payload to a full-resolution Mono1 image.
+    /// Small-format posts are pixel-doubled (lossless for their content),
+    /// so every full-resolution rendering path applies unchanged.
     pub fn decode_image(&self) -> Result<Mono1Image> {
-        let packed = codec::decode(self.codec, &self.encoded_image, MONO1_PACKED_LEN)?;
-        Mono1Image::from_packed(&packed)
+        let (width, _height, unc_len) =
+            format_geometry(self.pixel_format).ok_or(BaogramError::UnknownPixelFormat)?;
+        let packed = codec::decode(self.codec, &self.encoded_image, unc_len, width / 8)?;
+        if self.pixel_format == PIXEL_FORMAT_MONO1_SMALL {
+            Ok(Mono1Small::from_packed(&packed)?.to_full())
+        } else {
+            Mono1Image::from_packed(&packed)
+        }
     }
 
     /// The 16-byte post ID (first 16 bytes of the digest).
@@ -360,6 +426,34 @@ mod tests {
     }
 
     #[test]
+    fn small_format_round_trip() {
+        // capture pipeline: synthetic gray frame -> small quantize ->
+        // despeckle -> sign; decode pixel-doubles back to full res
+        let small = Mono1Small::from_gray(&synthetic_test_frame(), None).unwrap().despeckle();
+        let id = Identity::from_seed(&TEST_SEED);
+        let post = Post::create_small(&id, 5, "small", "compact", &small).unwrap();
+        assert_eq!(post.pixel_format, PIXEL_FORMAT_MONO1_SMALL);
+        let bytes = post.serialize();
+        let parsed = Post::parse(&bytes).unwrap();
+        assert_eq!(parsed, post);
+        assert_eq!(parsed.decode_image().unwrap(), small.to_full());
+        // a small post is drastically smaller than the full-format one
+        let full = Post::create(&id, 5, "small", "compact", &test_image()).unwrap();
+        assert!(bytes.len() < full.serialize().len());
+    }
+
+    #[test]
+    fn small_format_dimension_mismatch_rejected() {
+        let small = Mono1Small::from_gray(&synthetic_test_frame(), None).unwrap();
+        let id = Identity::from_seed(&TEST_SEED);
+        let post = Post::create_small(&id, 5, "", "", &small).unwrap();
+        let mut bytes = post.serialize();
+        // claim full-format dimensions on a small post
+        bytes[8..10].copy_from_slice(&256u16.to_be_bytes());
+        assert_eq!(Post::parse(&bytes).unwrap_err(), BaogramError::UnsupportedDimensions);
+    }
+
+    #[test]
     fn handle_caption_bounds() {
         let id = Identity::from_seed(&TEST_SEED);
         let img = test_image();
@@ -417,6 +511,7 @@ mod tests {
         // swap in B's public key and recompute digest so digest check passes
         post.author_pubkey = id_b.public_key();
         let header = canonical_header(
+            post.pixel_format,
             post.codec,
             post.seq,
             &post.author_pubkey,

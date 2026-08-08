@@ -139,3 +139,27 @@ at 64 B / 500 ms, and every missed frame cost a full ~42 s loop):
   with fountain-frames.b45). Python peer mirrored, both directions.
 * Compatibility: old firmware cannot parse codec-2 posts or v2 frames
   (fleet = 1 badge; `baogram-host send --protocol v1` covers legacy).
+
+## 2026-08-08 (later): compact posts — small format, despeckle, codec 3
+
+Target: typical shares in 4-10 QR frames (a 384-960 byte post).
+
+* **Pixel format 2 (128x120)**: the badge display's native resolution;
+  capture now box-averages the 256x240 grayscale 2x2, thresholds, and
+  signs the small image (4x less raw data; nothing visibly lost
+  on-badge). Decode pixel-doubles to full format so every rendering
+  path is unchanged. Full-format posts remain valid.
+* **Capture despeckle**: 3x3 majority filter before signing removes
+  near-threshold salt-and-pepper noise — photos look cleaner AND
+  run-length compress far better. Pre-signing image processing, not a
+  protocol change.
+* **Codec 3 CtxArithMono1**: 10-bit-context adaptive binary range coder
+  (LZMA rc), byte-identical Rust/Python, ~480 us to encode a worst-case
+  frame in release Rust. encode_best now picks the smallest of codecs
+  1/2/3 (ties to lowest id).
+* Golden synthetic frame, small format, full pipeline: **286-byte post
+  = 3 fountain frames at 96 B**. Full-format best pick stays codec 2
+  (383 B post); codec 3 wins on busier content. Real photos: expected
+  ~5-12 frames depending on texture (measure on hardware).
+* Existing golden vectors stayed byte-stable (forced-codec vectors);
+  new vectors: valid-post-best.bgrm, valid-post-small.bgrm.
