@@ -1,60 +1,110 @@
 # Baogram — signed picture-sharing for the DC34 badge
 
-> [!WARNING]
-> Loading your own firmware onto your badge will wipe the light encryption key and cause your badge to enter developer mode.
-
 **Baogram** turns the DC34 badge into an offline, serverless photo
-network: shoot 1-bit photos with the badge camera, sign them with the
-badge's Ed25519 identity, and beam them badge-to-badge (or to a laptop)
-as fountain-coded animated QR streams — typical shots transfer in a
-handful of frames. The badge boots straight into the photo feed; the
-original vault application (FIDO, TOTP, light-gene exchange) lives one
-"Exit Baogram" away, behind the app launcher.
+network. Shoot 1-bit photos with the badge camera, sign them with the
+badge's Ed25519 identity, and beam them badge-to-badge — or to a laptop —
+as fountain-coded animated QR streams. Typical shots transfer in a handful
+of frames. No servers, no radios, no accounts: two badges pointed at each
+other is the whole network.
 
-You can also skip the camera: push a 128x128 black-and-white PNG from
-your computer over USB with
+The badge boots straight into the photo feed. The original vault
+application (FIDO2, TOTP, the conference light-gene exchange) is still
+there, one "Exit Baogram" away behind the app launcher.
+
+> [!WARNING]
+> Loading your own firmware onto your badge **erases the factory light
+> encryption key and permanently switches the badge to developer mode**.
+> Light-gene exchange with stock badges stops working, and the factory
+> state cannot be restored by you or by this project. Read
+> [BAOGRAM_HARDWARE_TEST.md](BAOGRAM_HARDWARE_TEST.md) before flashing a
+> badge you care about.
+
+## What it does
+
+* **Shoot** — the badge camera captures to 1-bit, 128x120, despeckled.
+* **Sign** — every post carries an Ed25519 signature over its digest, so a
+  post's author can be verified by whoever receives it.
+* **Share** — animated QR, fountain-coded, so a receiver can start
+  mid-stream and still recover the picture.
+* **Receive** — point one badge's camera at another's screen.
+* **Upload** — push a picture from your computer instead of shooting it
+  (below).
+* **Gallery** — up to 32 posts, stored in the badge's encrypted PDDB.
+
+## Quickstart
+
+Flash a badge (see [Flashing](#flashing)), then:
+
+| you want to | do this |
+|---|---|
+| take a photo | 🔥 from the feed, 🔥 to capture, 🔥 to save |
+| share a post | ∴ on a post → **Share** — the QR stream loops |
+| receive a post | ← from the feed, then point at the sending badge |
+| upload a picture | `dc34-image --port <port> --image pic.png`, then 🔥 |
+| leave Baogram | ∴ → **Exit Baogram** for the vault app |
+
+🔥 is the middle (fire) button; ∴ is the center-press/select key.
+
+## Uploading a picture from your computer
+
+Skip the camera: push a 128x128 black-and-white PNG over USB serial with
 [`dc34-image`](https://github.com/bunnie/dc34-image) and the badge stages
-it as a post — press 🔥 to sign and save it. See
+it as a post — press 🔥 to sign and save it, and from there it shares over
+QR like any camera shot.
+
+```sh
+dc34-image --port /dev/cu.usbmodemXXXX --image bao.png
+```
+
+Full walk-through, including what the badge does to your picture and what
+to do when nothing appears on screen:
 **[BAOGRAM_IMAGE_UPLOAD.md](BAOGRAM_IMAGE_UPLOAD.md)**.
 
-Start here:
+## Documentation
 
 * **[BAOGRAM_USAGE.md](BAOGRAM_USAGE.md)** — using the badge, the
-  emulator, the flasher, and the laptop peer.
+  emulator, the flasher, and the laptop peer. Start here.
 * **[BAOGRAM_IMAGE_UPLOAD.md](BAOGRAM_IMAGE_UPLOAD.md)** — uploading a
   picture from your computer and turning it into a post.
 * [BAOGRAM_PROTOCOL.md](BAOGRAM_PROTOCOL.md) — normative wire formats.
-* [BAOGRAM_BUILD.md](BAOGRAM_BUILD.md) — building; `scripts/build-baogram.sh`
-  produces the flashable set, `python3 tools/flash_badge.py --build`
-  builds *and* flashes.
+* [BAOGRAM_ARCHITECTURE.md](BAOGRAM_ARCHITECTURE.md) — how the app is put
+  together.
+* [BAOGRAM_SECURITY.md](BAOGRAM_SECURITY.md) — threat model and what the
+  signatures do and do not promise.
+* [BAOGRAM_BUILD.md](BAOGRAM_BUILD.md) — building and testing.
 * [BAOGRAM_HARDWARE_TEST.md](BAOGRAM_HARDWARE_TEST.md) — read before
   flashing any badge you care about.
+* [BAOGRAM_STATUS.md](BAOGRAM_STATUS.md) — what is verified, and how.
 
-**Prebuilt images** — a flashable, developer-signed `loader/swap/xous.uf2`
-set is attached to each
-[release](https://github.com/zitterbewegung/dc34-baogram/releases), so you
-can try the badge build without setting up the Rust/Xous toolchain. Flash
-in that order, or use `python3 tools/flash_badge.py`. Installing a
-developer-signed image erases the badge's factory light key and puts it
-permanently in developer mode — read BAOGRAM_HARDWARE_TEST.md first.
+## Flashing
 
-This repository is a fork of the DC34 `vault` application (upstream
-notes below); the sibling `xous-core` checkout needs the matching
-`feature/baogram-camera-api` branch.
+**Prebuilt images.** Each
+[release](https://github.com/zitterbewegung/dc34-baogram/releases) carries
+a developer-signed `loader.uf2` / `swap.uf2` / `xous.uf2` set with
+checksums, so you can try Baogram without a toolchain.
 
----
+To install: hold any button while plugging the badge into USB — it mounts
+as a FAT volume named `BAOCHIP` — then copy the files **in this order**:
 
-# DC34 `vault` Application
+1. `loader.uf2`
+2. `swap.uf2`
+3. `xous.uf2`
 
-This is the `vault` application as customized for Defcon34.
+Then **press any button to boot**. That final step flushes the last
+sector; powering off without it can leave part of the image missing. First
+boot after an update is slow (PDDB initialization).
 
-It provides the in-conference badge interactivity, namely, customizing lights by scanning encrypted QR codes between badges.
+`python3 tools/flash_badge.py` does all of this for you, and
+`tools/webflash/` does it from a browser.
 
-There's a couple easter eggs buried in the code here, if you care to look for them, and maybe even a flag to capture if you look hard enough.
+To go back to stock, use the
+[official images](https://ci.betrusted.io/releases/latest/baochip/dc34-badge/latest.zip)
+— though the badge stays in developer mode, since the factory key is gone.
 
 ## Building
 
-Assumes the following directory structure:
+Baogram builds against sibling checkouts, with `xous-core` on the matching
+`feature/baogram-camera-api` branch:
 
 ```
  .
@@ -64,66 +114,49 @@ Assumes the following directory structure:
  └── xous-core
 ```
 
-And that these commands are run from *inside* the xous-core directory. Prerequisites:
-
-- Latest Rust
-- Run `cargo xtask install-toolkit` inside the `xous-core` repo
-
-```shell
-echo "===== Building Console ====="
-(
-    cd ../dc34-console &&
-    cargo build --release --target riscv32imac-unknown-xous-elf --features board-baosec --features oem-baosec-lite --features bao1x --features utralib/bao1x &&
-) || {
-    echo "dc34-console build failed!"
-    exit 1
-}
-
-echo "===== Building Vault ====="
-(
-    cd ../dc34-baogram &&
-    cargo build --release --target riscv32imac-unknown-xous-elf --features board-baosec &&
-) || {
-    echo "dc34-baogram build failed!"
-    exit 1
-}
-
-cargo xtask baosec-lite ../dc34-console/target/riscv32imac-unknown-xous-elf/release/dc34-console~flash ../dc34-baogram/target/riscv32imac-unknown-xous-elf/release/dc34-vault \
-    --no-timestamp --feature usb --kernel-feature debug-proc --no-verify
+```sh
+scripts/build-baogram.sh          # console + vault + packaged UF2 set
+python3 tools/flash_badge.py --build   # build *and* flash
 ```
 
-## Conference Mode
+Prerequisites — an official rustup toolchain (a distribution-built Rust
+fails against the prebuilt Xous std), `cargo xtask install-toolkit` inside
+`xous-core`, and a tag-reachable `xous-core` for image signing. The
+details, the manual command sequence, and the test suites are in
+[BAOGRAM_BUILD.md](BAOGRAM_BUILD.md).
 
-When the core module is mated to the badge carrier, the module defaults to "conference" mode, which shows the Defcon logo, alternating with an image of your choice if you upload it using https://github.com/bunnie/dc34-image.
+```sh
+scripts/test-baogram.sh                # every host-runnable suite
+scripts/test-import-emulator.sh        # upload path, in the emulator
+```
 
-You can "mix" light patterns with other badges by scanning QR codes. The light patterns are encrypted using a common, shared key across the entire population - if you can extract that key, then you can effectively be a "seeder" for arbitrary light patterns. However, initially every badge has a limited color range, and the only way to make your badge more colorful is to interact with someone who has the colors that you desire.
+There is also a full emulator: `cargo xtask baosec-emu` from `xous-core`
+runs the badge app on your desktop, no hardware needed. See
+[BAOGRAM_USAGE.md](BAOGRAM_USAGE.md).
 
-The interaction proceeds as follows:
+## The vault application
 
-1. Press either the left or right button. This shows a QR code that reveals a nonce.
-2. Ask the light color "donor" to scan your QR code by pressing the middle button on their badge.
-3. Scan the resulting QR code on the donor's badge.
-4. Accept or reject your new light pattern.
+This repository is a fork of bunnie's DC34
+[`vault`](https://github.com/bunnie/dc34-vault) application, and
+everything it did still works — Baogram is an app alongside it, reachable
+from the launcher.
 
-For more details on the cryptographic exchange, see [defcon_scheme.md](./defcon-scheme.md).
+**Conference mode.** With the core module mated to the badge carrier, the
+badge shows the Defcon logo alternating with a picture you upload. Light
+patterns "mix" between badges by scanning QR codes: press left or right to
+show a nonce, have the color donor scan it with their middle button, scan
+the QR they show back, then accept or reject the result. The patterns are
+encrypted under a key shared across the whole population — extract it and
+you can seed arbitrary patterns. Part of that key is planned to be leaked
+so brute-forcing it becomes a contest. Details in
+[defcon-scheme.md](./defcon-scheme.md).
 
-The current plan is to leak a portion of the shared key, so that anyone who wants to show off their burly ASIC cracker can take a go at brute-forcing the key. If nobody has brute-forced or extracted the key by the end of the show, enough bits will be leaked such that a brute force should be do-able with a high-end desktop GPU and a day of effort.
+**Token mode.** Detached from the carrier (two screws on the back; a
+silicone cap is in the kit), the module is a USB FIDO2 2FA token that also
+stores TOTPs and passwords scanned from QR codes, generated by
+[this browser extension](https://github.com/baochip/qr-url-extension).
+There is no battery, so scan a time-bearing QR after plugging in if you
+want TOTP.
 
-## Token Mode
-
-Once you've left the conference, you can detach the clear plastic core module by removing the two screws on the back side of the module. A pair of replacement screws and a silicone cap is included in your badge kit to seal up the holes left by detaching from the badge carrier.
-
-Thus detached, you can plug your badge into a computer via USB and use it as a 2FA (FIDO2) token. It also supports storting TOTPs and plaintext passwords by scanning QR codes. The QR codes are generated by installing [this browser extension](https://github.com/baochip/qr-url-extension). The QR codes encode the current time. Because the device doesn't have an internal battery, you'll need to scan one of these QR codes when you plug in the device to set the current time if you plan to use the TOTP function.
-
-## Updates
-
-Get firmware updates at [https://ci.betrusted.io/releases/latest/baochip/dc34-badge/latest.zip](https://ci.betrusted.io/releases/latest/baochip/dc34-badge/latest.zip). The zip file must be extracted into the three constituent files (xous.uf2, swap.uf2, loader.uf2) prior to copying to the device!
-
-To perform an update:
-
-1. Press and hold any button while plugging the module into a computer. This will cause the device to enumerate as a USB mass storage device.
-2. Copy the files loader.uf2, xous.uf2, and swap.uf2 to the device.
-3. If you're under Linux, be sure to unmount the drive to ensure that the cached files are actually written to the device.
-4. Press any button to boot the device.
-
-This final boot step is required to flush any partially written sectors to disk; shutting off the device without booting can lead to a portion of the last sector going missing, depending upon the OS.
+There are a couple of easter eggs buried in the upstream code, and maybe a
+flag to capture if you look hard enough.
