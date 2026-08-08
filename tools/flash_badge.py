@@ -154,16 +154,29 @@ def main() -> int:
     print(f"badge volume: {vol}")
 
     for name in IMAGE_ORDER:
-        if badge_volume() is None:
-            print(f"volume vanished (re-enumeration); waiting for it to return...")
-            vol = wait_for_badge(args.timeout, "re-mount")
         src = images[name]
-        dst = vol / name
-        print(f"copying {name} ({src.stat().st_size} bytes)...", flush=True)
-        shutil.copyfile(src, dst)
-        subprocess.run(["sync"], check=False)
-        # give a re-enumerating bootloader a moment before the next copy
-        time.sleep(1.0)
+        # the bootloader may re-enumerate at any point after ingesting an
+        # image — including in the middle of the NEXT file's copy. UF2
+        # blocks are address-tagged, so re-copying the whole file after a
+        # re-mount is always safe.
+        for attempt in range(1, 6):
+            if badge_volume() is None:
+                print("volume vanished (re-enumeration); waiting for it to return...")
+                vol = wait_for_badge(args.timeout, "re-mount")
+            dst = vol / name
+            retry = f" (attempt {attempt})" if attempt > 1 else ""
+            print(f"copying {name} ({src.stat().st_size} bytes){retry}...", flush=True)
+            try:
+                shutil.copyfile(src, dst)
+                subprocess.run(["sync"], check=False)
+                # give a re-enumerating bootloader a moment before the next copy
+                time.sleep(1.0)
+                break
+            except OSError as e:
+                print(f"{name}: device went away mid-copy ({e.strerror}); retrying after re-mount")
+                time.sleep(2.0)
+        else:
+            fail(f"{name}: copy failed 5 times - power-cycle the badge and retry")
 
     flush_and_unmount()
     print(
