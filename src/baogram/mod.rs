@@ -36,12 +36,17 @@ pub enum PendingSource {
     Captured,
     /// Received over QR and signature-verified. Save or reject only.
     Received,
+    /// Uploaded over serial with the `image` console command (dc34-image)
+    /// and converted from the 128x128 avatar bitmap. Signed locally at save
+    /// time exactly like a capture, but there is nothing to "retake" — the
+    /// left key discards.
+    Imported,
 }
 
 /// A post awaiting the user's Save/Retake/Discard decision.
 pub struct Pending {
     pub source: PendingSource,
-    /// For `Captured`: the quantized small-format image, signed at save time.
+    /// For `Captured`/`Imported`: the small-format image, signed at save time.
     pub image: Option<baogram_core::image::Mono1Small>,
     /// For `Received`: the verified post and its serialized bytes.
     pub post: Option<(Post, Vec<u8>)>,

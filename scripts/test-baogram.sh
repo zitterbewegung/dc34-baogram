@@ -4,6 +4,10 @@
 #   2. bao-video still-camera helpers (chunk math + synthetic-frame SHA)
 #   3. Python peer + Rust/Python interop (pytest, regenerates the
 #      python vectors), then baogram-core again to close the loop.
+#   5. vault app unit tests (serial-upload bitmap -> post conversion)
+#
+# The emulator-driven import test needs a window; run it separately with
+# scripts/test-import-emulator.sh.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -18,13 +22,13 @@ host_triple="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')" || fail "rustc no
 rustup_bin="$HOME/.rustup/toolchains/stable-$host_triple/bin"
 [ -d "$rustup_bin" ] && export PATH="$rustup_bin:$PATH"
 
-echo "===== [1/4] baogram-core ====="
+echo "===== [1/5] baogram-core ====="
 (cd "$vault_dir/libraries/baogram-core" && cargo test)
 
-echo "===== [2/4] bao-video still-camera helpers (hosted) ====="
+echo "===== [2/5] bao-video still-camera helpers (hosted) ====="
 (cd "$ws/xous-core" && cargo test -p bao-video --features hosted-baosec,modals/hosted-baosec)
 
-echo "===== [3/4] baogram-host (Python peer + interop) ====="
+echo "===== [3/5] baogram-host (Python peer + interop) ====="
 host_dir="$vault_dir/tools/baogram-host"
 if [ ! -x "$host_dir/.venv/bin/pytest" ]; then
     echo "creating venv and installing baogram-host..."
@@ -33,8 +37,15 @@ if [ ! -x "$host_dir/.venv/bin/pytest" ]; then
 fi
 (cd "$host_dir" && .venv/bin/pytest -q)
 
-echo "===== [4/4] baogram-core again (consumes Python-generated vectors) ====="
+echo "===== [4/5] baogram-core again (consumes Python-generated vectors) ====="
 (cd "$vault_dir/libraries/baogram-core" && cargo test golden)
+
+echo "===== [5/5] vault app unit tests (upload -> post conversion) ====="
+(cd "$vault_dir" && cargo test --features hosted-baosec --bin dc34-vault)
 
 echo
 echo "All Baogram host-side test suites passed."
+echo
+echo "Not included (needs a graphical session for the emulator window):"
+echo "  scripts/test-import-emulator.sh - drives a serial upload through the"
+echo "  live app and checks it lands in the gallery as a signed post."

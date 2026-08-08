@@ -11,16 +11,32 @@ handful of frames. The badge boots straight into the photo feed; the
 original vault application (FIDO, TOTP, light-gene exchange) lives one
 "Exit Baogram" away, behind the app launcher.
 
+You can also skip the camera: push a 128x128 black-and-white PNG from
+your computer over USB with
+[`dc34-image`](https://github.com/bunnie/dc34-image) and the badge stages
+it as a post — press 🔥 to sign and save it. See
+**[BAOGRAM_IMAGE_UPLOAD.md](BAOGRAM_IMAGE_UPLOAD.md)**.
+
 Start here:
 
 * **[BAOGRAM_USAGE.md](BAOGRAM_USAGE.md)** — using the badge, the
   emulator, the flasher, and the laptop peer.
+* **[BAOGRAM_IMAGE_UPLOAD.md](BAOGRAM_IMAGE_UPLOAD.md)** — uploading a
+  picture from your computer and turning it into a post.
 * [BAOGRAM_PROTOCOL.md](BAOGRAM_PROTOCOL.md) — normative wire formats.
 * [BAOGRAM_BUILD.md](BAOGRAM_BUILD.md) — building; `scripts/build-baogram.sh`
   produces the flashable set, `python3 tools/flash_badge.py --build`
   builds *and* flashes.
 * [BAOGRAM_HARDWARE_TEST.md](BAOGRAM_HARDWARE_TEST.md) — read before
   flashing any badge you care about.
+
+**Prebuilt images** — a flashable, developer-signed `loader/swap/xous.uf2`
+set is attached to each
+[release](https://github.com/zitterbewegung/dc34-baogram/releases), so you
+can try the badge build without setting up the Rust/Xous toolchain. Flash
+in that order, or use `python3 tools/flash_badge.py`. Installing a
+developer-signed image erases the badge's factory light key and puts it
+permanently in developer mode — read BAOGRAM_HARDWARE_TEST.md first.
 
 This repository is a fork of the DC34 `vault` application (upstream
 notes below); the sibling `xous-core` checkout needs the matching

@@ -105,6 +105,8 @@ Environment variables (hosted only):
 | `BAO_CAMERA_IMAGE=<file>` | camera serves this raw 256x240 gray8 image instead of the synthetic test frame |
 | `BAOGRAM_SEED=1` | auto-capture one photo right after boot, so a fresh feed starts with content |
 | `BAOGRAM_TOUR=1` | scripted walk-through of every Baogram screen |
+| `BAOGRAM_IMPORT_TEST=1` | drive the serial-upload-becomes-a-post test and log `BAOGRAM IMPORT TEST: PASS`/`FAIL` |
+| `BAOGRAM_IMPORT_TEST_EXIT=1` | with the above, exit the process 0/1 on the verdict instead of idling |
 
 Emulator state persists in `xous-core/tools/pddb-images/hosted.bin`
 (gallery + identity survive restarts). Delete that file for a factory-

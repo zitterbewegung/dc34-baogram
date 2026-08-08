@@ -38,6 +38,183 @@ pub fn spawn_seed_if_requested(conn: xous::CID) {
     }
 }
 
+/// When BAOGRAM_IMPORT_TEST=1, run the serial-upload-becomes-a-post test
+/// end to end against the live app: write a known 128x128 bitmap into the
+/// `dc34:image` PDDB key exactly as the `image` console command does, ring
+/// `VaultOp::ImageLoad`, press 🔥 to accept the staged post, then read the
+/// post back out of the gallery and compare its pixels to the upload.
+///
+/// Emits `BAOGRAM IMPORT TEST: PASS`/`FAIL <reason>` for a harness to grep,
+/// and exits the process with 0/1 when BAOGRAM_IMPORT_TEST_EXIT=1.
+pub fn spawn_import_test_if_requested(conn: xous::CID) {
+    if std::env::var("BAOGRAM_IMPORT_TEST").map(|v| v == "1").unwrap_or(false) {
+        std::thread::spawn(move || run_import_test(conn));
+    }
+}
+
+fn run_import_test(conn: xous::CID) {
+    use std::io::Write;
+
+    use pddb::Pddb;
+
+    let case = |name: &str, ok: bool, detail: &str| {
+        log::info!(
+            "BAOGRAM IMPORT TEST: [{}] {}{}{}",
+            if ok { "ok" } else { "FAILED" },
+            name,
+            if detail.is_empty() { "" } else { " - " },
+            detail
+        );
+        ok
+    };
+    let finish = |ok: bool, reason: &str| -> ! {
+        if ok {
+            log::info!("BAOGRAM IMPORT TEST: PASS");
+        } else {
+            log::error!("BAOGRAM IMPORT TEST: FAIL {}", reason);
+        }
+        if std::env::var("BAOGRAM_IMPORT_TEST_EXIT").map(|v| v == "1").unwrap_or(false) {
+            // give the log server a moment to drain before tearing down
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    };
+
+    // boot lands in the feed; let the UI settle
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let pddb = Pddb::new();
+    let before = crate::baogram::storage::load_index(&pddb);
+    log::info!("BAOGRAM IMPORT TEST: starting, {} post(s) in the gallery", before.len());
+
+    // --- 1. the upload itself: 2,048 bytes into dc34:image ---------------
+    let bits = crate::baogram::render::import_test_pattern();
+    let raw: Vec<u8> = bits.iter().flat_map(|w| w.to_ne_bytes()).collect();
+    if raw.len() != 2048 {
+        finish(false, "test bitmap is not 2048 bytes");
+    }
+    match pddb.get(
+        dc34_api::DC34_DICT,
+        dc34_api::DC34_IMAGE,
+        None,
+        true,
+        true,
+        Some(2048),
+        None::<fn()>,
+    ) {
+        Ok(mut k) => {
+            if k.write_all(&raw).is_err() {
+                finish(false, "could not write the dc34:image key");
+            }
+            pddb.sync().ok();
+        }
+        Err(_) => finish(false, "could not open the dc34:image key"),
+    }
+
+    // --- 2. the notification the console sends after the last chunk ------
+    xous::send_message(
+        conn,
+        xous::Message::new_scalar(crate::VaultOp::ImageLoad.to_usize().unwrap(), 1, 0, 0, 0),
+    )
+    .ok();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    // --- 3. accept the staged post ---------------------------------------
+    key(conn, '🔥', 2000);
+
+    // --- 4. assertions ----------------------------------------------------
+    let after = crate::baogram::storage::load_index(&pddb);
+    let mut ok = case(
+        "upload adds exactly one post",
+        after.len() == before.len() + 1,
+        &format!("{} -> {}", before.len(), after.len()),
+    );
+    if !ok {
+        finish(false, "the upload did not produce a post");
+    }
+
+    let Some(new_id) = after.iter().find(|id| !before.contains(id)) else {
+        finish(false, "no new post id in the index");
+    };
+    let Some(bytes) = crate::baogram::storage::load_post(&pddb, new_id) else {
+        finish(false, "the new post could not be read back");
+    };
+
+    // parse() verifies the digest and the signature
+    let post = match baogram_core::post::Post::parse(&bytes) {
+        Ok(p) => p,
+        Err(e) => finish(false, &format!("the new post failed to verify: {:?}", e)),
+    };
+    ok &= case("post is signed and verifies", true, "");
+
+    let expected = crate::baogram::render::display_bitmap_to_small(&bits);
+    match post.decode_image() {
+        Ok(img) => {
+            let want = expected.to_full();
+            let differing = (0..baogram_core::image::IMAGE_HEIGHT)
+                .flat_map(|y| (0..baogram_core::image::IMAGE_WIDTH).map(move |x| (x, y)))
+                .filter(|&(x, y)| img.get(x, y) != want.get(x, y))
+                .count();
+            ok &= case(
+                "stored pixels match the uploaded bitmap",
+                differing == 0,
+                &format!("{} differing pixels", differing),
+            );
+        }
+        Err(e) => ok &= case("post image decodes", false, &format!("{:?}", e)),
+    }
+
+    // the post must not be blank - a bug that zeroed the buffer would still
+    // round-trip through every check above
+    let dark = expected.packed().iter().map(|b| b.count_zeros()).sum::<u32>();
+    ok &= case(
+        "image has both dark and light pixels",
+        dark > 1000 && dark < (baogram_core::image::SMALL_PIXELS as u32 - 1000),
+        &format!("{} dark of {}", dark, baogram_core::image::SMALL_PIXELS),
+    );
+
+    // --- 5. a second upload arriving while one is already pending must
+    //        not stage twice or clobber the first ------------------------
+    let base = after.len();
+    for _ in 0..2 {
+        xous::send_message(
+            conn,
+            xous::Message::new_scalar(crate::VaultOp::ImageLoad.to_usize().unwrap(), 1, 0, 0, 0),
+        )
+        .ok();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+    }
+    // one 🔥 accepts the single staged post; a second stage would need a
+    // second 🔥, and the duplicate would be deduplicated by post id anyway,
+    // so the count is what distinguishes "staged once" from "clobbered"
+    key(conn, '🔥', 2000);
+    let twice = crate::baogram::storage::load_index(&pddb);
+    ok &= case(
+        "a repeat upload does not double-stage",
+        twice.len() == base + 1,
+        &format!("{} -> {} (expected {})", base, twice.len(), base + 1),
+    );
+
+    // --- 6. `image clear` must not create a post -------------------------
+    let before_clear = twice.len();
+    xous::send_message(
+        conn,
+        xous::Message::new_scalar(crate::VaultOp::ImageLoad.to_usize().unwrap(), 0, 0, 0, 0),
+    )
+    .ok();
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let after_clear = crate::baogram::storage::load_index(&pddb);
+    ok &= case(
+        "image clear does not create a post",
+        after_clear.len() == before_clear,
+        &format!("{} -> {}", before_clear, after_clear.len()),
+    );
+
+    finish(ok, "see the [FAILED] lines above");
+}
+
 fn key(conn: xous::CID, k: char, wait_ms: u64) {
     xous::send_message(
         conn,

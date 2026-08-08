@@ -280,6 +280,8 @@ fn main() -> ! {
     hosted::spawn_tour_if_requested(conn);
     #[cfg(feature = "hosted-baosec")]
     hosted::spawn_seed_if_requested(conn);
+    #[cfg(feature = "hosted-baosec")]
+    hosted::spawn_import_test_if_requested(conn);
 
     // "warm up" the first menu manger to reduce UI latency using a dummy key press
     // the purpose of this dry run is to get all the UI code wired into main memory
@@ -1323,7 +1325,37 @@ fn main() -> ! {
                     let image_len = key.read(&mut image_buf).expect("couldn't read key");
                     if image_len == 2048 {
                         let bitmap: Result<&[u32], _> = bytemuck::try_cast_slice(&image_buf);
-                        vault_ui.user_bitmap = Some(bitmap.unwrap().try_into().unwrap());
+                        let bits: [u32; 512] = bitmap.unwrap().try_into().unwrap();
+                        vault_ui.user_bitmap = Some(bits);
+
+                        // A freshly uploaded picture also becomes a Baogram
+                        // post: convert it to the same small format every
+                        // other post uses and stage it for review. Only done
+                        // from an idle-ish mode — an upload must not yank the
+                        // display away from a capture, share or receive in
+                        // progress, and must not clobber a pending post.
+                        let mode_now = *mode.lock().unwrap();
+                        let stageable = matches!(
+                            mode_now,
+                            VaultMode::Idle
+                                | VaultMode::IdleDevMode
+                                | VaultMode::Launcher
+                                | VaultMode::BaogramFeed
+                                | VaultMode::BaogramProfile
+                        );
+                        if stageable {
+                            let image = baogram::render::display_bitmap_to_small(&bits);
+                            if baogram::controller::set_pending_import(&baogram, image) {
+                                *mode.lock().unwrap() = VaultMode::BaogramPreview;
+                                vault_ui.redraw();
+                            } else {
+                                log::info!(
+                                    "baogram import skipped: a post is already pending review"
+                                );
+                            }
+                        } else {
+                            log::info!("baogram import skipped: busy in {:?}", mode_now);
+                        }
                     }
                 }
             }),

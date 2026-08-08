@@ -1606,6 +1606,17 @@ impl VaultUi {
                     "🔥 save   ← retake".to_string(),
                 )
             }
+            crate::baogram::PendingSource::Imported => {
+                let img = pending
+                    .image
+                    .as_ref()
+                    .expect("imported pending must hold an image")
+                    .to_full();
+                (
+                    crate::baogram::render::mono1_to_display_bitmap(&img),
+                    "uploaded  🔥 save   ← discard".to_string(),
+                )
+            }
             crate::baogram::PendingSource::Received => {
                 let (post, _) = pending.post.as_ref().expect("received pending must hold a post");
                 match post.decode_image() {

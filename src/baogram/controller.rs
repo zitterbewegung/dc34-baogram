@@ -42,7 +42,8 @@ pub fn save_pending(shared: &Shared, pddb: &Pddb) -> String {
         return "nothing to save".to_string();
     };
     let (post_id, serialized) = match pending.source {
-        PendingSource::Captured => {
+        // an imported (serial-uploaded) image is signed exactly like a capture
+        PendingSource::Captured | PendingSource::Imported => {
             let Some(image) = pending.image.as_ref() else {
                 return "internal error: no image".to_string();
             };
@@ -108,6 +109,20 @@ pub fn save_pending(shared: &Shared, pddb: &Pddb) -> String {
 pub fn set_pending_capture(shared: &Shared, image: baogram_core::image::Mono1Small) {
     let mut s = shared.lock().unwrap();
     s.pending = Some(Pending { source: PendingSource::Captured, image: Some(image), post: None });
+}
+
+/// Stash a serial-uploaded image as the pending post.
+///
+/// Returns false without touching state when something else is already
+/// pending — an upload must never silently discard a photo the user has
+/// not yet decided on.
+pub fn set_pending_import(shared: &Shared, image: baogram_core::image::Mono1Small) -> bool {
+    let mut s = shared.lock().unwrap();
+    if s.pending.is_some() {
+        return false;
+    }
+    s.pending = Some(Pending { source: PendingSource::Imported, image: Some(image), post: None });
+    true
 }
 
 /// Drop the pending post (retake or discard).

@@ -86,10 +86,35 @@ cd xous-core && cargo test -p bao-video --features hosted-baosec,modals/hosted-b
 cd dc34-baogram/tools/baogram-host
 python3 -m venv .venv && .venv/bin/pip install -e '.[test]'
 .venv/bin/pytest
+
+# vault app units: serial-upload bitmap -> Baogram post conversion
+cd dc34-baogram && cargo test --features hosted-baosec --bin dc34-vault
 ```
 
 The pytest run regenerates `test-vectors/python/`; re-run the
 baogram-core tests afterwards to close the Python→Rust loop.
+
+### Emulator test: a serial upload becomes a post
+
+`scripts/test-import-emulator.sh` runs the whole app in the baosec
+emulator and exercises the `dc34-image` path end to end: it writes a known
+128x128 bitmap into the `dc34:image` PDDB key exactly as the `image`
+console command does, rings `VaultOp::ImageLoad`, accepts the staged post
+with 🔥, then reads the post back out of the gallery and compares its
+pixels to the upload. It checks:
+
+* the upload adds exactly one post (which only happens if the app switched
+  to the preview screen — 🔥 in the feed would open the camera instead)
+* the post is signed and `Post::parse` verifies it
+* every stored pixel matches the uploaded bitmap
+* the image is neither all-dark nor all-light
+* a repeat upload while one is pending does not double-stage or clobber
+* `image clear` does not create a post
+
+The emulator opens a minifb window, so this needs a graphical session; it
+is deliberately not part of `test-baogram.sh`. The script refuses to start
+on top of a running emulator (two emulators corrupt each other's
+`hosted.bin`) and tears down the whole emulator process group afterwards.
 
 ## Flashing
 
