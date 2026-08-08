@@ -13,8 +13,10 @@ import sys
 
 from . import crypto
 from .format import FormatError, Post
-from .fragments import DEFAULT_FRAGMENT_PAYLOAD
+from .fragments import DEFAULT_FOUNTAIN_PAYLOAD, DEFAULT_FRAGMENT_PAYLOAD
 from .image import load_png_as_mono1, save_mono1_as_png
+
+CODEC_NAMES = {0: "RawMono1", 1: "PackBitsMono1", 2: "RowDeltaMono1"}
 
 
 def _load_or_create_identity(key_path: str) -> crypto.Identity:
@@ -52,7 +54,7 @@ def cmd_make_post(args) -> int:
         f.write(data)
     print(
         f"wrote {args.output}: {len(data)} bytes, post id {post.post_id.hex()}, "
-        f"codec {'PackBits' if post.codec == 1 else 'raw'} "
+        f"codec {CODEC_NAMES.get(post.codec, str(post.codec))} "
         f"({len(post.encoded_image)}/{7680} image bytes)"
     )
     return 0
@@ -79,7 +81,7 @@ def cmd_inspect(args) -> int:
     print(f"handle:       {post.handle!r}")
     print(f"caption:      {post.caption!r}")
     print(f"sequence:     {post.seq}")
-    print(f"codec:        {'PackBitsMono1' if post.codec == 1 else 'RawMono1'}")
+    print(f"codec:        {CODEC_NAMES.get(post.codec, str(post.codec))}")
     print(f"image bytes:  {len(post.encoded_image)} encoded / 7680 raw")
     print(f"total bytes:  {len(data)}")
     print("signature:    VALID")
@@ -112,7 +114,7 @@ def cmd_send(args) -> int:
 
     with open(args.post, "rb") as f:
         data = f.read()
-    qr_send.send(data, args.payload_bytes, args.period_ms)
+    qr_send.send(data, args.payload_bytes, args.period_ms, protocol=args.protocol)
     return 0
 
 
@@ -168,7 +170,11 @@ def main(argv=None) -> int:
 
     sd = sub.add_parser("send", help="display a post as animated QR codes")
     sd.add_argument("post")
-    sd.add_argument("--payload-bytes", type=int, default=DEFAULT_FRAGMENT_PAYLOAD)
+    sd.add_argument("--protocol", choices=("v2", "v1"), default="v2",
+                    help="v2 = fountain frames (default), v1 = looping fragments")
+    sd.add_argument("--payload-bytes", type=int, default=None,
+                    help=f"chunk size (default {DEFAULT_FOUNTAIN_PAYLOAD} for v2, "
+                    f"{DEFAULT_FRAGMENT_PAYLOAD} for v1)")
     sd.add_argument("--period-ms", type=int, default=500)
     sd.set_defaults(fn=cmd_send)
 

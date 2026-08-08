@@ -19,7 +19,10 @@ use std::path::{Path, PathBuf};
 use crate::codec;
 use crate::crypto::Identity;
 use crate::error::BaogramError;
-use crate::fragment::{FeedResult, Fragment, Reassembler, fragment_post};
+use crate::fragment::{
+    FeedResult, FountainDecoder, FountainFrame, FountainIter, Fragment, Reassembler, SplitMix64,
+    fragment_post,
+};
 use crate::image::{MONO1_PACKED_LEN, Mono1Image, synthetic_test_frame};
 use crate::post::Post;
 
@@ -28,6 +31,9 @@ const GOLDEN_HANDLE: &str = "golden";
 const GOLDEN_CAPTION: &str = "baogram golden vector v1";
 const GOLDEN_SEQ: u64 = 7;
 const FRAGMENT_CHUNK: usize = 64;
+const FOUNTAIN_CHUNK: usize = 96;
+/// Coded frames beyond the systematic prefix in the fountain vector file.
+const FOUNTAIN_EXTRA: usize = 10;
 
 fn vectors_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("test-vectors")
@@ -52,12 +58,32 @@ fn check_or_write(name: &str, bytes: &[u8]) {
     }
 }
 
-/// The canonical compressible golden post: synthetic frame, PackBits codec.
-fn golden_post_packbits() -> Post {
+/// The canonical compressible golden post: synthetic frame. Its strong
+/// vertical correlation makes the row-delta codec win.
+fn golden_post_rowdelta() -> Post {
     let identity = Identity::from_seed(&TEST_SEED);
     let image = Mono1Image::quantize(&synthetic_test_frame(), None).unwrap();
     let post = Post::create(&identity, GOLDEN_SEQ, GOLDEN_HANDLE, GOLDEN_CAPTION, &image).unwrap();
-    assert_eq!(post.codec, codec::CODEC_PACKBITS_MONO1, "synthetic frame must compress");
+    assert_eq!(post.codec, codec::CODEC_ROWDELTA_MONO1, "synthetic frame must pick row-delta");
+    post
+}
+
+/// A golden post that exercises codec 1: every row is a solid run of one
+/// pseudo-random byte, so PackBits and row-delta tie and the lower codec
+/// id wins by the canonical rule.
+fn golden_post_packbits() -> Post {
+    let identity = Identity::from_seed(&TEST_SEED);
+    let mut state = 0x0bad_cafeu32;
+    let mut img = Vec::with_capacity(MONO1_PACKED_LEN);
+    for _ in 0..240 {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        img.extend_from_slice(&[(state & 0xff) as u8; 32]);
+    }
+    let image = Mono1Image::from_packed(&img).unwrap();
+    let post = Post::create(&identity, GOLDEN_SEQ + 2, GOLDEN_HANDLE, "packbits golden", &image).unwrap();
+    assert_eq!(post.codec, codec::CODEC_PACKBITS_MONO1, "tie must pick the lower codec id");
     post
 }
 
@@ -80,14 +106,19 @@ fn golden_post_raw() -> Post {
 
 #[test]
 fn golden_valid_posts() {
-    let pb = golden_post_packbits();
-    let pb_bytes = pb.serialize();
-    check_or_write("valid-post-packbits.bgrm", &pb_bytes);
-    let parsed = Post::parse(&pb_bytes).unwrap();
+    let rd = golden_post_rowdelta();
+    let rd_bytes = rd.serialize();
+    check_or_write("valid-post-rowdelta.bgrm", &rd_bytes);
+    let parsed = Post::parse(&rd_bytes).unwrap();
     assert_eq!(
         parsed.decode_image().unwrap().packed()[..],
         Mono1Image::quantize(&synthetic_test_frame(), None).unwrap().packed()[..]
     );
+
+    let pb = golden_post_packbits();
+    let pb_bytes = pb.serialize();
+    check_or_write("valid-post-packbits.bgrm", &pb_bytes);
+    Post::parse(&pb_bytes).unwrap();
 
     let raw = golden_post_raw();
     let raw_bytes = raw.serialize();
@@ -97,7 +128,7 @@ fn golden_valid_posts() {
 
 #[test]
 fn golden_invalid_signature() {
-    let mut bytes = golden_post_packbits().serialize();
+    let mut bytes = golden_post_rowdelta().serialize();
     let n = bytes.len();
     bytes[n - 1] ^= 0x01; // flip last signature byte
     check_or_write("invalid-signature.bgrm", &bytes);
@@ -106,7 +137,7 @@ fn golden_invalid_signature() {
 
 #[test]
 fn golden_modified_caption() {
-    let post = golden_post_packbits();
+    let post = golden_post_rowdelta();
     let mut bytes = post.serialize();
     let cap_off = crate::post::CANONICAL_HEADER_LEN + post.handle.len();
     bytes[cap_off] ^= 0x20; // 'b' -> 'B' in the caption
@@ -116,7 +147,7 @@ fn golden_modified_caption() {
 
 #[test]
 fn golden_modified_image() {
-    let post = golden_post_packbits();
+    let post = golden_post_rowdelta();
     let mut bytes = post.serialize();
     let img_off = crate::post::CANONICAL_HEADER_LEN + post.handle.len() + post.caption.len();
     bytes[img_off + 10] ^= 0xff;
@@ -126,7 +157,7 @@ fn golden_modified_image() {
 
 #[test]
 fn golden_truncated_post() {
-    let bytes = golden_post_packbits().serialize();
+    let bytes = golden_post_rowdelta().serialize();
     let truncated = &bytes[..bytes.len() / 2];
     check_or_write("truncated-post.bgrm", truncated);
     assert_eq!(Post::parse(truncated).unwrap_err(), BaogramError::Truncated);
@@ -134,7 +165,7 @@ fn golden_truncated_post() {
 
 #[test]
 fn golden_unknown_version() {
-    let mut bytes = golden_post_packbits().serialize();
+    let mut bytes = golden_post_rowdelta().serialize();
     bytes[4] = 0x7f;
     check_or_write("unknown-version.bgrm", &bytes);
     assert_eq!(Post::parse(&bytes).unwrap_err(), BaogramError::UnknownVersion);
@@ -142,7 +173,7 @@ fn golden_unknown_version() {
 
 #[test]
 fn golden_fragments() {
-    let post = golden_post_packbits();
+    let post = golden_post_rowdelta();
     let bytes = post.serialize();
     let frags = fragment_post(&post.short_id(), &bytes, FRAGMENT_CHUNK).unwrap();
 
@@ -191,6 +222,47 @@ fn golden_fragments() {
     assert_eq!(reparsed, post);
 }
 
+#[test]
+fn golden_fountain_frames() {
+    let post = golden_post_rowdelta();
+    let bytes = post.serialize();
+    let it = FountainIter::new(&post.short_id(), &bytes, FOUNTAIN_CHUNK).unwrap();
+    let k = it.chunk_count();
+
+    // the full systematic prefix plus the first coded frames, one Base45
+    // line each — this pins the v2 wire format AND the PRNG/degree spec
+    let frames: Vec<FountainFrame> = (0..(k + FOUNTAIN_EXTRA) as u32).map(|f| it.frame_at(f)).collect();
+    let all: String = frames.iter().map(|f| f.to_base45()).collect::<Vec<_>>().join("\n");
+    check_or_write("fountain-frames.b45", all.as_bytes());
+
+    // decode from a deterministic lossy shuffle of the committed lines:
+    // drop every third frame, feed the rest in scrambled order, then keep
+    // pulling later coded frames until complete
+    let parsed: Vec<FountainFrame> =
+        all.lines().map(|l| FountainFrame::from_base45(l).unwrap()).collect();
+    let mut order: Vec<usize> = (0..parsed.len()).filter(|i| i % 3 != 0).collect();
+    let mut rng = SplitMix64::new(0x601D);
+    for i in (1..order.len()).rev() {
+        let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+        order.swap(i, j);
+    }
+    let (mut d, _) = FountainDecoder::new(&parsed[order[0]]).unwrap();
+    for &i in &order[1..] {
+        if d.feed(&parsed[i]).unwrap() == FeedResult::Complete {
+            break;
+        }
+    }
+    let mut f = (k + FOUNTAIN_EXTRA) as u32;
+    while !d.is_complete() {
+        d.feed(&it.frame_at(f)).unwrap();
+        f += 1;
+        assert!(f < 100 * k as u32, "fountain decode must converge");
+    }
+    let rebuilt = d.into_bytes().unwrap();
+    assert_eq!(rebuilt, bytes);
+    assert_eq!(Post::parse(&rebuilt).unwrap(), post);
+}
+
 /// Interop: verify vectors produced by the Python peer, when committed.
 #[test]
 fn python_generated_vectors() {
@@ -215,5 +287,27 @@ fn python_generated_vectors() {
         let text = std::fs::read_to_string(&frag_path).unwrap();
         let frag = Fragment::from_base45(text.trim()).expect("Python fragment must parse");
         assert_eq!(frag.short_post_id, post.short_id());
+    }
+
+    // fountain frames from Python: feed them in reverse order (any-order by
+    // construction) and require the exact post bytes back
+    let fountain_path = dir.join("fountain-from-python.b45");
+    if fountain_path.exists() {
+        let text = std::fs::read_to_string(&fountain_path).unwrap();
+        let frames: Vec<FountainFrame> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| FountainFrame::from_base45(l.trim()).expect("Python fountain frame must parse"))
+            .collect();
+        assert!(!frames.is_empty());
+        let (mut d, _) = FountainDecoder::new(frames.last().unwrap()).unwrap();
+        for f in frames.iter().rev().skip(1) {
+            if d.feed(f).unwrap() == FeedResult::Complete {
+                break;
+            }
+        }
+        assert!(d.is_complete(), "Python fountain frames must decode in Rust (got {}/{})",
+            d.received_count(), d.total_count());
+        assert_eq!(d.into_bytes().unwrap(), bytes, "Python fountain stream must rebuild the post");
     }
 }

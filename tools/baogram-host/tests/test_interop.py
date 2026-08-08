@@ -29,18 +29,26 @@ def test_vectors_directory_exists():
     assert VECTORS.is_dir(), f"golden vectors missing at {VECTORS}"
 
 
-def test_valid_packbits_post_parses_and_matches_rust_identity():
-    data = read("valid-post-packbits.bgrm")
+def test_valid_rowdelta_post_parses_and_matches_rust_identity():
+    # the synthetic-frame golden post now picks the row-delta codec
+    data = read("valid-post-rowdelta.bgrm")
     post = Post.parse(data)
     assert post.handle == "golden"
     assert post.caption == "baogram golden vector v1"
     assert post.seq == 7
-    assert post.codec == codec.CODEC_PACKBITS_MONO1
+    assert post.codec == codec.CODEC_ROWDELTA_MONO1
     # Python's Ed25519 must derive the same public key from the shared seed
     ident = crypto.Identity(TEST_SEED)
     assert post.author_pubkey == ident.public_key
     # image decodes to exactly the Python-quantized synthetic frame
     assert post.decode_image() == quantize(synthetic_test_frame())
+
+
+def test_valid_packbits_post_parses():
+    # per-row-solid golden image: PackBits and row-delta tie, codec 1 wins
+    post = Post.parse(read("valid-post-packbits.bgrm"))
+    assert post.codec == codec.CODEC_PACKBITS_MONO1
+    assert post.caption == "packbits golden"
 
 
 def test_valid_raw_post_parses():
@@ -50,15 +58,15 @@ def test_valid_raw_post_parses():
 
 
 def test_python_reserializes_rust_posts_byte_identically():
-    for name in ("valid-post-packbits.bgrm", "valid-post-raw.bgrm"):
+    for name in ("valid-post-rowdelta.bgrm", "valid-post-packbits.bgrm", "valid-post-raw.bgrm"):
         data = read(name)
         assert Post.parse(data).serialize() == data, name
 
 
 def test_python_signature_matches_rust_exactly():
     """Ed25519 is deterministic: building the same post from the same seed
-    must reproduce the Rust bytes exactly."""
-    data = read("valid-post-packbits.bgrm")
+    must reproduce the Rust bytes exactly (including the codec pick)."""
+    data = read("valid-post-rowdelta.bgrm")
     ident = crypto.Identity(TEST_SEED)
     packed = quantize(synthetic_test_frame())
     rebuilt = Post.create(ident, 7, "golden", "baogram golden vector v1", packed)
@@ -93,8 +101,9 @@ def test_out_of_order_reassembly_of_rust_fragments():
     lines = read("fragments-all.b45").decode().splitlines()
     frags = [Fragment.from_base45(l) for l in lines]
     order = list(reversed(range(len(frags))))
-    order[0], order[7] = order[7], order[0]
-    order[3], order[11] = order[11], order[3]
+    if len(order) >= 12:  # same guard as the Rust golden test
+        order[0], order[7] = order[7], order[0]
+        order[3], order[11] = order[11], order[3]
     r = Reassembler(frags[order[0]])
     for i in order[1:]:
         r.feed(frags[i])
@@ -106,20 +115,50 @@ def test_out_of_order_reassembly_of_rust_fragments():
         r.feed(conflict)
     assert e.value.reason == "conflict"
     data = r.to_bytes()
-    assert data == read("valid-post-packbits.bgrm")
+    assert data == read("valid-post-rowdelta.bgrm")
     Post.parse(data)  # verifies signature
 
 
 def test_python_fragments_match_rust_fragments():
     """Fragmenting the golden post in Python must produce the exact Base45
     lines Rust produced."""
-    data = read("valid-post-packbits.bgrm")
+    data = read("valid-post-rowdelta.bgrm")
     post = Post.parse(data)
     from baogram_host.fragments import fragment_post
 
     frags = fragment_post(post.short_id, data, 64)
     expected = read("fragments-all.b45").decode().splitlines()
     assert [f.to_base45() for f in frags] == expected
+
+
+def test_python_fountain_frames_match_rust_and_decode():
+    """The committed Rust fountain stream must be byte-identical to the
+    Python encoder's output (pinning the PRNG + wire format), and must
+    decode from a lossy, shuffled subset."""
+    from baogram_host.fragments import FountainDecoder, fountain_frame_at, parse_frame
+
+    data = read("valid-post-rowdelta.bgrm")
+    post = Post.parse(data)
+    expected = read("fountain-frames.b45").decode().splitlines()
+    ours = [fountain_frame_at(post.short_id, data, 96, f).to_base45() for f in range(len(expected))]
+    assert ours == expected
+
+    frames = [parse_frame(l) for l in expected]
+    # drop every third line, feed the rest in reverse; the systematic
+    # prefix is fully present so completion is guaranteed
+    subset = [f for i, f in enumerate(frames) if i % 3 != 0]
+    d = FountainDecoder(subset[-1])
+    done = False
+    for f in reversed(subset[:-1]):
+        if d.feed(f) == "complete":
+            done = True
+            break
+    frame_no = len(frames)
+    while not done and frame_no < 100 * d.frag_count:
+        done = d.feed(fountain_frame_at(post.short_id, data, 96, frame_no)) == "complete"
+        frame_no += 1
+    assert d.is_complete
+    assert d.to_bytes() == data
 
 
 def test_generate_python_vectors_for_rust(tmp_path):
@@ -132,9 +171,14 @@ def test_generate_python_vectors_for_rust(tmp_path):
     post = Post.create(ident, 42, "pyhost", "made in python", packed)
     data = post.serialize()
     (outdir / "post-from-python.bgrm").write_bytes(data)
-    from baogram_host.fragments import fragment_post
+    from baogram_host.fragments import fountain_frame_at, fragment_post
 
     frag = fragment_post(post.short_id, data, 64)[0]
     (outdir / "fragment-from-python.b45").write_text(frag.to_base45() + "\n")
+    # fountain stream: the full systematic prefix plus ten coded frames,
+    # consumed any-order by the Rust golden test
+    k = -(-len(data) // 96)
+    lines = [fountain_frame_at(post.short_id, data, 96, f).to_base45() for f in range(k + 10)]
+    (outdir / "fountain-from-python.b45").write_text("\n".join(lines) + "\n")
     # self-check: parse back
     assert Post.parse(data).post_id == post.post_id

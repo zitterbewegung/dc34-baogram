@@ -114,3 +114,28 @@ starts is absorbed (press again); share-loop periods quantize to the
 
 Run BAOGRAM_HARDWARE_TEST.md §§4-6 (install on a sacrificial dev badge,
 camera preview, capture, save) and fill in the §12 benchmark table.
+
+## 2026-08-08: protocol v2 — fountain frames + row-delta codec
+
+Motivated by first field use (a real photo needed 84 sequential QR codes
+at 64 B / 500 ms, and every missed frame cost a full ~42 s loop):
+
+* **BG v2 fountain frames** (BAOGRAM_PROTOCOL.md §4b): endless rateless
+  stream — systematic prefix `0..k`, then deterministic XOR combinations
+  (splitmix64 + integer 1/d degree distribution). Any caught frame
+  helps; order and loss are irrelevant. Peeling decoder with bounded
+  memory (512 frames / 64 KiB pending, oldest evicted). v1 still
+  accepted; receivers lock to the first frame's version.
+* **Codec 2 RowDeltaMono1** (§2): XOR each 32-byte row with the row
+  above, then PackBits. Canonical pick: smaller of codec 1/2, ties to
+  the lower id, raw when neither compresses.
+* **New sender defaults**: 96-byte chunks @ 250 ms (was 64 B @ 500 ms).
+* Measured on the golden synthetic frame: post 2,627 B -> 383 B
+  (encoded image 2,439 B -> 195 B); QR count 42 (v1@64) -> 4 (v2@96).
+  The synthetic frame is best-case for row-delta; photographs gain less
+  from the codec, but the fountain property holds regardless.
+* Rust: `cargo test` in baogram-core (77 tests, incl. shuffled/lossy
+  fountain decode, cross-language PRNG pins, golden vectors regenerated
+  with fountain-frames.b45). Python peer mirrored, both directions.
+* Compatibility: old firmware cannot parse codec-2 posts or v2 frames
+  (fleet = 1 badge; `baogram-host send --protocol v1` covers legacy).

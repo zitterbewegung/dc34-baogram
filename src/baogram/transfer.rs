@@ -1,14 +1,18 @@
 //! Animated-QR share state and the receive worker.
 //!
-//! Share: the serialized post is held once; fragments are materialized one
-//! at a time (Base45 + one QrCode each) — no precomputed QR matrices.
+//! Share: the serialized post is held once; BG v2 fountain frames are
+//! materialized one at a time (Base45 + one QrCode each) — no precomputed
+//! QR matrices. The stream is endless: frames 0..k are the source chunks,
+//! later frames are deterministic XOR combinations, so receivers profit
+//! from every frame they catch regardless of order or losses.
 //!
 //! Receive: a worker thread drives the continuous QR stream, feeds
-//! Base45 fragments into the bounded reassembler, publishes progress, and
-//! verifies the finished post before anything is offered for saving.
+//! Base45 frames (v1 or v2, locked to whichever arrives first) into the
+//! bounded decoder, publishes progress, and verifies the finished post
+//! before anything is offered for saving.
 
 use baogram_core::error::BaogramError;
-use baogram_core::fragment::{Fragment, FragmentIter, Reassembler};
+use baogram_core::fragment::{AnyFrame, AnyReceiver, FountainIter};
 use baogram_core::post::Post;
 use num_traits::ToPrimitive;
 use qrcode::QrCode;
@@ -21,9 +25,11 @@ use crate::VaultOp;
 const PAYLOAD_STEPS: [usize; 5] = [24, 40, 64, 80, 96];
 /// Diagnostic frame periods (ms) cycled with the jog dial in share mode.
 const PERIOD_STEPS: [u32; 4] = [250, 400, 500, 750];
-/// Conservative defaults until measured on hardware.
-pub const DEFAULT_PAYLOAD: usize = 64;
-pub const DEFAULT_PERIOD_MS: u32 = 500;
+/// Fountain defaults: missed frames are harmless under fountain coding, so
+/// favor the biggest payload the display fits and the fastest cadence the
+/// pump allows.
+pub const DEFAULT_PAYLOAD: usize = baogram_core::fragment::DEFAULT_FOUNTAIN_PAYLOAD;
+pub const DEFAULT_PERIOD_MS: u32 = 250;
 /// The redraw pump ticks roughly every 250 ms (see totp::pumper).
 const PUMP_MS: u32 = 250;
 
@@ -32,18 +38,19 @@ pub struct ShareState {
     short_id: [u8; 8],
     pub payload_bytes: usize,
     pub period_ms: u32,
-    pub frag_idx: usize,
+    /// Fountain frame number; increments forever (the stream never loops).
+    pub frame_no: u32,
     /// Set after a diagnostics change so the UI can flash the new settings.
     pub settings_dirty: bool,
 }
 
 impl ShareState {
     pub fn new(post: &Post, post_bytes: Vec<u8>) -> ShareState {
-        let count = post_bytes.len().div_ceil(DEFAULT_PAYLOAD);
+        let k = post_bytes.len().div_ceil(DEFAULT_PAYLOAD);
         log::info!(
-            "baogram share: {} bytes -> {} fragments of <= {} bytes @ {} ms",
+            "baogram share: {} bytes -> fountain stream over {} chunks of {} bytes @ {} ms",
             post_bytes.len(),
-            count,
+            k,
             DEFAULT_PAYLOAD,
             DEFAULT_PERIOD_MS
         );
@@ -52,21 +59,22 @@ impl ShareState {
             post_bytes,
             payload_bytes: DEFAULT_PAYLOAD,
             period_ms: DEFAULT_PERIOD_MS,
-            frag_idx: 0,
+            frame_no: 0,
             settings_dirty: false,
         }
     }
 
+    /// Source chunk count k: a loss-free receiver completes in k frames.
     pub fn count(&self) -> usize { self.post_bytes.len().div_ceil(self.payload_bytes) }
 
     pub fn short_id_hex(&self) -> String { self.short_id.iter().map(|b| format!("{:02x}", b)).collect() }
 
-    /// Lazily build the QR code for the current fragment. One fragment and
-    /// one QrCode exist at a time.
+    /// Lazily build the QR code for the current fountain frame. One frame
+    /// and one QrCode exist at a time.
     pub fn current_qr(&self) -> Option<QrCode> {
-        let iter = FragmentIter::new(&self.short_id, &self.post_bytes, self.payload_bytes).ok()?;
-        let frag = iter.fragment_at(self.frag_idx)?;
-        let encoded = frag.to_base45();
+        let iter = FountainIter::new(&self.short_id, &self.post_bytes, self.payload_bytes).ok()?;
+        let frame = iter.frame_at(self.frame_no);
+        let encoded = frame.to_base45();
         match QrCode::with_error_correction_level(encoded.as_bytes(), qrcode::EcLevel::M) {
             Ok(code) => Some(code),
             Err(e) => {
@@ -76,20 +84,20 @@ impl ShareState {
         }
     }
 
-    pub fn advance(&mut self) { self.frag_idx = (self.frag_idx + 1) % self.count(); }
+    pub fn advance(&mut self) { self.frame_no = self.frame_no.wrapping_add(1); }
 
-    /// Pump quanta to hold each fragment on screen.
+    /// Pump quanta to hold each frame on screen.
     pub fn quanta_per_frame(&self) -> u32 { (self.period_ms / PUMP_MS).max(1) }
 
-    /// Cycle the fragment payload size (diagnostics). Restarts the loop
-    /// because the fragment count changes.
+    /// Cycle the frame payload size (diagnostics). Restarts the stream
+    /// because the chunk geometry changes.
     pub fn cycle_payload(&mut self) {
         let pos = PAYLOAD_STEPS.iter().position(|&p| p == self.payload_bytes).unwrap_or(0);
         self.payload_bytes = PAYLOAD_STEPS[(pos + 1) % PAYLOAD_STEPS.len()];
-        self.frag_idx = 0;
+        self.frame_no = 0;
         self.settings_dirty = true;
         log::info!(
-            "baogram share diagnostics: payload {} bytes -> {} fragments",
+            "baogram share diagnostics: payload {} bytes -> {} chunks",
             self.payload_bytes,
             self.count()
         );
@@ -133,41 +141,41 @@ pub fn spawn_receive_worker(shared: Shared, main_conn: xous::CID) {
             done_code = RX_DONE_FAILED;
         } else {
             gfx.qr_stream_set_status("Baogram: scanning...").ok();
-            let mut reassembler: Option<Reassembler> = None;
+            let mut receiver: Option<AnyReceiver> = None;
             let mut decode_stamps: Vec<u64> = Vec::new();
             let outcome = loop {
                 match gfx.qr_stream_read() {
                     Ok(Some(text)) => {
                         decode_stamps.push(tt.elapsed_ms());
-                        match Fragment::from_base45(text.trim()) {
-                            Ok(frag) => {
-                                // A fragment from a *different* post (another
+                        match AnyFrame::from_base45(text.trim()) {
+                            Ok(frame) => {
+                                // A frame from a *different* post (another
                                 // badge sharing nearby) is not part of this
                                 // transfer: skip it rather than aborting.
                                 // Conflicts within the same post ID remain
                                 // fatal below.
-                                if let Some(r) = reassembler.as_ref() {
-                                    if frag.short_post_id != r.short_post_id() {
+                                if let Some(r) = receiver.as_ref() {
+                                    if frame.short_post_id() != r.short_post_id() {
                                         log::info!(
-                                            "baogram receive: ignoring fragment from other post {:x?}",
-                                            &frag.short_post_id[..4]
+                                            "baogram receive: ignoring frame from other post {:x?}",
+                                            &frame.short_post_id()[..4]
                                         );
                                         continue;
                                     }
                                 }
-                                let feed_result = match reassembler.as_mut() {
-                                    None => match Reassembler::new(&frag) {
+                                let feed_result = match receiver.as_mut() {
+                                    None => match AnyReceiver::new(&frame) {
                                         Ok((r, res)) => {
-                                            reassembler = Some(r);
+                                            receiver = Some(r);
                                             Ok(res)
                                         }
                                         Err(e) => Err(e),
                                     },
-                                    Some(r) => r.feed(&frag),
+                                    Some(r) => r.feed(&frame),
                                 };
                                 match feed_result {
                                     Ok(_) => {
-                                        let r = reassembler.as_ref().unwrap();
+                                        let r = receiver.as_ref().unwrap();
                                         let progress = (r.received_count(), r.total_count());
                                         shared.lock().unwrap().rx_progress = progress;
                                         gfx.qr_stream_set_status(&format!(
@@ -184,12 +192,12 @@ pub fn spawn_receive_worker(shared: Shared, main_conn: xous::CID) {
                                     }
                                     Err(e) => {
                                         // malformed but non-conflicting: skip it
-                                        log::debug!("baogram receive: dropping fragment: {:?}", e);
+                                        log::debug!("baogram receive: dropping frame: {:?}", e);
                                     }
                                 }
                             }
                             Err(e) => {
-                                // Not a Baogram fragment (or CRC failure):
+                                // Not a Baogram frame (or CRC failure):
                                 // ignore and keep scanning.
                                 log::debug!("baogram receive: ignoring QR: {:?}", e);
                             }
@@ -211,7 +219,7 @@ pub fn spawn_receive_worker(shared: Shared, main_conn: xous::CID) {
             }
             done_code = match outcome {
                 RxOutcome::Complete => {
-                    let bytes = reassembler.take().unwrap().into_bytes().unwrap();
+                    let bytes = receiver.take().unwrap().into_bytes().unwrap();
                     let t0 = tt.elapsed_ms();
                     match Post::parse(&bytes) {
                         Ok(post) => {

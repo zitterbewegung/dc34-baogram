@@ -1635,10 +1635,12 @@ impl VaultUi {
                     } else if (quantum / (qpf * 4).max(1)) % 2 == 1 {
                         "any key stops".to_string()
                     } else {
+                        // fountain stream: frame number keeps counting past
+                        // the chunk count k (any k distinct frames suffice)
                         format!(
-                            "{} {}/{}",
+                            "{} f{} k{}",
                             &share.short_id_hex()[..4],
-                            share.frag_idx + 1,
+                            share.frame_no.wrapping_add(1),
                             share.count()
                         )
                     };
