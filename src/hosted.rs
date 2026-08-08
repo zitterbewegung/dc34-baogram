@@ -21,6 +21,23 @@ pub fn spawn_tour_if_requested(conn: xous::CID) {
     }
 }
 
+/// When BAOGRAM_SEED=1, capture and save one photo right after boot so a
+/// fresh emulator's feed starts with content instead of "No posts yet".
+/// Pairs with BAO_CAMERA_IMAGE to seed a specific demo picture.
+pub fn spawn_seed_if_requested(conn: xous::CID) {
+    if std::env::var("BAOGRAM_SEED").map(|v| v == "1").unwrap_or(false) {
+        std::thread::spawn(move || {
+            // boot lands in the feed; give the UI a moment to settle
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            log::info!("BAOGRAM SEED: capturing one photo into the feed");
+            key(conn, '🔥', 2500); // feed -> camera preview (camera spin-up)
+            key(conn, '🔥', 1500); // capture -> save/retake preview
+            key(conn, '🔥', 1000); // save -> feed shows the new post
+            log::info!("BAOGRAM SEED: done");
+        });
+    }
+}
+
 fn key(conn: xous::CID, k: char, wait_ms: u64) {
     xous::send_message(
         conn,

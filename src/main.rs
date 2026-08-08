@@ -278,6 +278,8 @@ fn main() -> ! {
 
     #[cfg(feature = "hosted-baosec")]
     hosted::spawn_tour_if_requested(conn);
+    #[cfg(feature = "hosted-baosec")]
+    hosted::spawn_seed_if_requested(conn);
 
     // "warm up" the first menu manger to reduce UI latency using a dummy key press
     // the purpose of this dry run is to get all the UI code wired into main memory

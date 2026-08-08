@@ -1,7 +1,34 @@
-# DC34 `vault` Application
+# Baogram — signed picture-sharing for the DC34 badge
 
 > [!WARNING]
 > Loading your own firmware onto your badge will wipe the light encryption key and cause your badge to enter developer mode.
+
+**Baogram** turns the DC34 badge into an offline, serverless photo
+network: shoot 1-bit photos with the badge camera, sign them with the
+badge's Ed25519 identity, and beam them badge-to-badge (or to a laptop)
+as fountain-coded animated QR streams — typical shots transfer in a
+handful of frames. The badge boots straight into the photo feed; the
+original vault application (FIDO, TOTP, light-gene exchange) lives one
+"Exit Baogram" away, behind the app launcher.
+
+Start here:
+
+* **[BAOGRAM_USAGE.md](BAOGRAM_USAGE.md)** — using the badge, the
+  emulator, the flasher, and the laptop peer.
+* [BAOGRAM_PROTOCOL.md](BAOGRAM_PROTOCOL.md) — normative wire formats.
+* [BAOGRAM_BUILD.md](BAOGRAM_BUILD.md) — building; `scripts/build-baogram.sh`
+  produces the flashable set, `python3 tools/flash_badge.py --build`
+  builds *and* flashes.
+* [BAOGRAM_HARDWARE_TEST.md](BAOGRAM_HARDWARE_TEST.md) — read before
+  flashing any badge you care about.
+
+This repository is a fork of the DC34 `vault` application (upstream
+notes below); the sibling `xous-core` checkout needs the matching
+`feature/baogram-camera-api` branch.
+
+---
+
+# DC34 `vault` Application
 
 This is the `vault` application as customized for Defcon34.
 
