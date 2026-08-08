@@ -126,7 +126,11 @@ class Post:
         if data[5] != PIXEL_FORMAT_MONO1:
             raise FormatError("unknown_pixel_format")
         codec_id = data[6]
-        if codec_id not in (codec.CODEC_RAW_MONO1, codec.CODEC_PACKBITS_MONO1):
+        if codec_id not in (
+            codec.CODEC_RAW_MONO1,
+            codec.CODEC_PACKBITS_MONO1,
+            codec.CODEC_ROWDELTA_MONO1,
+        ):
             raise FormatError("unknown_codec")
         if data[7] != 0:
             raise FormatError("unknown_flags")

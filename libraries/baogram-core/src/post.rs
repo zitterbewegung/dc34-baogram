@@ -10,7 +10,7 @@
 //!      0    4  magic "BGRM"
 //!      4    1  version               (= 1)
 //!      5    1  pixel_format          (= 1: Mono1 packed MSB-first, 1 = white)
-//!      6    1  codec                 (0 = RawMono1, 1 = PackBitsMono1)
+//!      6    1  codec                 (0 = RawMono1, 1 = PackBitsMono1, 2 = RowDeltaMono1)
 //!      7    1  flags                 (= 0; reserved bits must be zero)
 //!      8    2  width                 (= 256)
 //!     10    2  height                (= 240)
@@ -197,7 +197,10 @@ impl Post {
             return Err(BaogramError::UnknownPixelFormat);
         }
         let codec_id = bytes[6];
-        if codec_id != codec::CODEC_RAW_MONO1 && codec_id != codec::CODEC_PACKBITS_MONO1 {
+        if codec_id != codec::CODEC_RAW_MONO1
+            && codec_id != codec::CODEC_PACKBITS_MONO1
+            && codec_id != codec::CODEC_ROWDELTA_MONO1
+        {
             return Err(BaogramError::UnknownCodec);
         }
         if bytes[7] != 0 {
@@ -333,6 +336,25 @@ mod tests {
         let id = Identity::from_seed(&TEST_SEED);
         let post = Post::create(&id, 1, "", "", &img).unwrap();
         assert_eq!(post.codec, codec::CODEC_RAW_MONO1);
+        let parsed = Post::parse(&post.serialize()).unwrap();
+        assert_eq!(parsed.decode_image().unwrap(), img);
+    }
+
+    #[test]
+    fn rowdelta_codec_round_trip() {
+        // vertically constant image: PackBits alone cannot compress it
+        // (alternating bytes within each row) but the row-delta filter
+        // zeroes every row after the first
+        let mut packed = Vec::with_capacity(MONO1_PACKED_LEN);
+        for _row in 0..240 {
+            for byte in 0..32 {
+                packed.push(if byte % 2 == 0 { 0xff } else { 0x00 });
+            }
+        }
+        let img = Mono1Image::from_packed(&packed).unwrap();
+        let id = Identity::from_seed(&TEST_SEED);
+        let post = Post::create(&id, 2, "delta", "", &img).unwrap();
+        assert_eq!(post.codec, codec::CODEC_ROWDELTA_MONO1);
         let parsed = Post::parse(&post.serialize()).unwrap();
         assert_eq!(parsed.decode_image().unwrap(), img);
     }

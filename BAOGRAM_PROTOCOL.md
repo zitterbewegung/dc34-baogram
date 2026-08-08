@@ -33,6 +33,7 @@ pixels. Post IDs identify exact post bytes, not pixel content.
 |----|----------------|--------------------------------------------|
 | 0  | RawMono1       | the 7,680 packed bytes verbatim            |
 | 1  | PackBitsMono1  | deterministic PackBits variant (below)     |
+| 2  | RowDeltaMono1  | row-delta filter, then PackBitsMono1       |
 
 PackBitsMono1 stream = sequence of blocks, control byte `c`:
 
@@ -47,9 +48,21 @@ bytes. Decoders MUST require exactly 7,680 output bytes and reject:
 premature end, output overflow or underflow, control `0x80`, and
 trailing input.
 
-Canonicality rule: codec 1 may be used **only when the compressed form
-is strictly smaller than 7,680 bytes**; parsers reject codec-1 posts
-whose encoded length is >= 7,680.
+RowDeltaMono1 (codec 2): treat the packed image as 240 rows of 32 bytes;
+the filtered image is row 0 verbatim, then each row XORed byte-wise with
+the **original** row above it. The filtered bytes are then encoded with
+PackBitsMono1 exactly as codec 1. Decoding un-filters top-down using the
+already-reconstructed previous row. Threshold-quantized photos are
+vertically correlated, so the filtered image is mostly zero and
+compresses far better (the golden synthetic frame: 2,439 encoded bytes
+under codec 1 vs 195 under codec 2).
+
+Canonicality rules: a compressed codec (1 or 2) may be used **only when
+the encoded form is strictly smaller than 7,680 bytes**; parsers reject
+compressed posts whose encoded length is >= 7,680. Creators MUST compute
+both codec 1 and codec 2 and pick the smaller encoding, ties going to
+the lower codec id (so both implementations produce identical posts);
+raw (0) when neither compresses.
 
 ## 3. Post container (`BGRM`)
 
@@ -59,7 +72,7 @@ offset  len  field
      0    4  magic = "BGRM"
      4    1  version = 1
      5    1  pixel_format = 1  (Mono1 as in section 1)
-     6    1  codec (0 | 1)
+     6    1  codec (0 | 1 | 2)
      7    1  flags = 0 (all bits reserved; nonzero rejected)
      8    2  width = 256
     10    2  height = 240
@@ -94,11 +107,15 @@ dimensions (exactly 256x240), handle/caption bounds, uncompressed length
 no trailing bytes), UTF-8 validity, digest recomputation, signature, and
 image decode to exactly 7,680 bytes.
 
-## 4. Fragments (`BG`), Base45, QR
+## 4. Fragments (`BG` version 1), Base45, QR
+
+Version 1 is the legacy fixed loop; current senders default to the
+fountain stream of section 4b, but v1 remains valid and receivers accept
+both.
 
 A serialized post is split with a **uniform chunk size** chosen by the
-sender (default 64 bytes; diagnostics allow 24/40/64/80/96): fragment
-`i` carries post bytes `[i*chunk, min((i+1)*chunk, total))`.
+sender (diagnostics allow 24/40/64/80/96): fragment `i` carries post
+bytes `[i*chunk, min((i+1)*chunk, total))`.
 
 ```text
 offset  len  field
@@ -135,6 +152,81 @@ fragment; QR codes use error-correction level M. Receivers:
   (bounded by 65,536) and track receipt in a fixed 4,096-bit bitmap;
 * refuse to parse an incomplete transfer as a post;
 * verify the completed post (section 3) before reporting or saving it.
+
+## 4b. Fountain frames (`BG` version 2)
+
+Version 2 replaces the fixed fragment loop with a **rateless fountain
+stream**: the sender emits frames `0, 1, 2, ...` forever and never
+repeats; any `k` sufficiently distinct frames reconstruct the post, so
+frame order and frame loss cost only time, never a full loop. v1 remains
+valid; receivers accept both and lock to the version of the first frame
+of a transfer.
+
+```text
+offset  len  field
+------  ---  -----
+     0    2  magic = "BG"
+     2    1  version = 2
+     3    1  flags = 0 (nonzero rejected)
+     4    8  short_post_id
+    12    4  frame_no   (u32)
+    16    2  k          (source chunk count, 1..=4096, == ceil(total_len / chunk_size))
+    18    4  total_len  (1..=65,536)
+    22    2  chunk_size (1..=1024)
+    24    2  payload_len (always == chunk_size; the final source chunk is
+              zero-padded for XOR purposes, total_len recovers the length)
+    26    n  payload = XOR of the source chunks selected by frame_no
+  26+n    4  crc32 = CRC-32/ISO-HDLC over bytes [0, 26+n)
+```
+
+Validation (each frame in isolation): magic/version/flags, CRC, geometry
+(`k == ceil(total_len / chunk_size)` plus the v1 bounds), `payload_len ==
+chunk_size`, and exact container length. `frame_no` may be any u32.
+
+**Chunk selection** (normative; identical in Rust and Python, pinned by
+golden vectors and unit tests):
+
+* `frame_no < k`: the frame carries source chunk `frame_no` verbatim
+  (**systematic prefix** — a loss-free receiver completes in exactly `k`
+  frames).
+* `frame_no >= k`: seed a **splitmix64** generator with
+  `BE_u64(short_post_id) XOR u64(frame_no)`.
+  * The first draw picks the degree `d` from the fixed-point distribution
+    `W(d) = floor(2^32 / d)`, `d = 1..=k`: with `r = draw mod sum(W)`,
+    the degree is the smallest `d` whose cumulative weight exceeds `r`.
+    (Integer-only on purpose: no floating point, no transcendental
+    functions, so cross-language determinism is trivial.)
+  * Subsequent draws pick chunk indices as `draw mod k`, skipping
+    already-chosen indices, until `d` distinct indices are chosen. The
+    payload is their XOR (order irrelevant).
+
+splitmix64 (all arithmetic mod 2^64): `state += 0x9E3779B97F4A7C15;
+z = state; z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9;
+z = (z ^ (z >> 27)) * 0x94D049BB133111EB; return z ^ (z >> 31)`.
+
+Receivers run a **peeling decoder**: a frame is reduced by XORing out
+already-resolved chunks; a frame reduced to one unknown resolves that
+chunk and cascades through stored frames. Stored unresolved frames are
+bounded (512 frames / 65,536 payload bytes, oldest evicted) — eviction
+costs efficiency, never correctness. Same conflict rules as v1: any
+same-short-ID disagreement in (k, total_len, chunk_size) — or a v1
+fragment for a v2 transfer — fails the transfer; other-ID frames are
+ignored. A corrupted-but-CRC-valid stream is caught by the post digest
+and signature checks after reassembly.
+
+Defaults: 96-byte chunks at 250 ms/frame (sender-side; the display pump
+quantizes periods to 250 ms).
+
+## 4c. Compatibility
+
+* Old receivers (v1-only firmware) cannot decode v2 frames and will
+  ignore them; senders on new firmware default to v2. The Python peer
+  (`baogram-host send --protocol v1`) can still produce v1 streams for
+  old badges.
+* Codec 2 (`RowDeltaMono1`, section 3) posts do not parse on old
+  firmware. Acceptable at this stage: the flashed fleet is one badge.
+  Codec choice is canonical (deterministic smallest-wins with ties to
+  the lower id), so both implementations produce identical posts.
 
 ## 5. Golden vectors
 

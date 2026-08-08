@@ -1,4 +1,5 @@
-"""QR receiver: watch a camera, decode Base45 fragment QR codes, and
+"""QR receiver: watch a camera, decode Base45 frame QR codes (BG v1
+fragments or BG v2 fountain frames, dispatched on the version byte), and
 reassemble them (any order, duplicates ignored, conflicts fatal) into a
 verified Baogram post.
 """
@@ -9,20 +10,20 @@ import sys
 import time
 
 from .format import FormatError, Post
-from .fragments import Fragment, FragmentError, Reassembler
+from .fragments import Fragment, FragmentError, Receiver, parse_frame
 
 
 def receive(camera_index: int = 0, timeout_s: float | None = None) -> bytes:
     """Blocks until a complete, signature-verified post is received.
     Returns the serialized post bytes. Raises TimeoutError on timeout and
-    FragmentError('conflict') on conflicting fragments."""
+    FragmentError('conflict') on conflicting frames."""
     import cv2
 
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f"cannot open camera {camera_index}")
     detector = cv2.QRCodeDetector()
-    reassembler: Reassembler | None = None
+    receiver: Receiver | None = None
     seen_texts_last = None
     decode_times: list[float] = []
     start = time.monotonic()
@@ -37,21 +38,21 @@ def receive(camera_index: int = 0, timeout_s: float | None = None) -> bytes:
                 continue
             text, _points, _ = detector.detectAndDecode(frame)
             status = "waiting for fragments..."
-            if reassembler is not None:
-                status = f"{reassembler.received_count}/{reassembler.frag_count}"
+            if receiver is not None:
+                status = f"{receiver.received_count}/{receiver.frag_count}"
             if text:
                 if text != seen_texts_last:
                     seen_texts_last = text
                     decode_times.append(time.monotonic())
                     try:
-                        frag = Fragment.from_base45(text)
+                        frag = parse_frame(text)
                     except FragmentError as e:
                         print(f"ignoring undecodable QR: {e}", file=sys.stderr)
                         frag = None
-                    if frag is not None and reassembler is not None and (
-                        frag.short_post_id != reassembler.short_post_id
+                    if frag is not None and receiver is not None and (
+                        frag.short_post_id != receiver.short_post_id
                     ):
-                        # a fragment from a different post (another sender in
+                        # a frame from a different post (another sender in
                         # view) is not part of this transfer: skip it
                         print(
                             f"ignoring fragment from other post {frag.short_post_id.hex()[:8]}",
@@ -59,18 +60,24 @@ def receive(camera_index: int = 0, timeout_s: float | None = None) -> bytes:
                         )
                         frag = None
                     if frag is not None:
-                        if reassembler is None:
-                            reassembler = Reassembler(frag)
+                        if receiver is None:
+                            receiver = Receiver(frag)
                         else:
-                            result = reassembler.feed(frag)  # same-post conflict raises
+                            result = receiver.feed(frag)  # same-post conflict raises
                             if result == "duplicate":
                                 pass
-                        print(
-                            f"fragment {frag.frag_index + 1}/{frag.frag_count} "
-                            f"({reassembler.received_count}/{reassembler.frag_count} held)"
-                        )
-                        if reassembler.is_complete:
-                            data = reassembler.to_bytes()
+                        if isinstance(frag, Fragment):
+                            print(
+                                f"fragment {frag.frag_index + 1}/{frag.frag_count} "
+                                f"({receiver.received_count}/{receiver.frag_count} held)"
+                            )
+                        else:
+                            print(
+                                f"frame {frag.frame_no + 1} "
+                                f"({receiver.received_count}/{receiver.frag_count} held)"
+                            )
+                        if receiver.is_complete:
+                            data = receiver.to_bytes()
                             # verify BEFORE reporting success
                             post = Post.parse(data)  # raises FormatError if invalid
                             if len(decode_times) > 1:

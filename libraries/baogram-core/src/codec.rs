@@ -1,10 +1,14 @@
 //! Lossless codecs for packed Mono1 image data.
 //!
-//! Two codecs exist in protocol version 1:
+//! Three codecs exist:
 //!
 //! * `RawMono1` (0): the 7,680 packed bytes verbatim.
 //! * `PackBitsMono1` (1): a deterministic PackBits-style byte run/literal
 //!   codec, defined below.
+//! * `RowDeltaMono1` (2): a row-delta filter (each 32-byte row XORed with
+//!   the row above, top row unchanged) followed by PackBitsMono1.
+//!   Threshold-quantized photos are vertically correlated, so the filtered
+//!   image is mostly zero bytes and PackBits compresses it far better.
 //!
 //! # PackBitsMono1 stream definition
 //!
@@ -33,6 +37,35 @@ use crate::error::{BaogramError, Result};
 pub const CODEC_RAW_MONO1: u8 = 0;
 /// Codec identifier for the deterministic PackBits variant defined here.
 pub const CODEC_PACKBITS_MONO1: u8 = 1;
+/// Codec identifier for the row-delta filter + PackBits combination.
+pub const CODEC_ROWDELTA_MONO1: u8 = 2;
+
+/// Row stride the row-delta filter operates on. Fixed by the Mono1 image
+/// geometry (256 px / 8); the codec only applies to whole-row inputs.
+pub const ROWDELTA_ROW_BYTES: usize = 32;
+
+/// Apply the row-delta filter: output row 0 is input row 0; output row i
+/// (i > 0) is input row i XOR input row i-1. Input length must be a
+/// multiple of [`ROWDELTA_ROW_BYTES`].
+pub fn row_delta_filter(input: &[u8]) -> Vec<u8> {
+    debug_assert!(input.len() % ROWDELTA_ROW_BYTES == 0);
+    let mut out = input.to_vec();
+    for i in (ROWDELTA_ROW_BYTES..input.len()).rev() {
+        out[i] ^= input[i - ROWDELTA_ROW_BYTES];
+    }
+    out
+}
+
+/// Invert [`row_delta_filter`]: row 0 is copied; row i (i > 0) is the
+/// filtered row i XOR the already-reconstructed row i-1.
+pub fn row_delta_unfilter(filtered: &[u8]) -> Vec<u8> {
+    debug_assert!(filtered.len() % ROWDELTA_ROW_BYTES == 0);
+    let mut out = filtered.to_vec();
+    for i in ROWDELTA_ROW_BYTES..out.len() {
+        out[i] ^= out[i - ROWDELTA_ROW_BYTES];
+    }
+    out
+}
 
 /// Deterministically compress `input` with the canonical PackBitsMono1
 /// encoder. The output is only useful if it is smaller than the input;
@@ -131,17 +164,25 @@ pub fn packbits_decode(input: &[u8], expected_len: usize) -> Result<Vec<u8>> {
 
 /// Encode packed image bytes with the best available codec.
 ///
-/// Returns `(codec_id, encoded_bytes)`. The compressed form is selected only
-/// when it is strictly smaller than the raw input; otherwise the raw bytes
-/// are used. This rule is part of the canonical format: parsers reject
-/// PackBits-coded posts whose encoded length is not smaller than raw.
+/// Returns `(codec_id, encoded_bytes)`. The choice is canonical and
+/// deterministic: PackBits (1) and row-delta + PackBits (2, whole-row
+/// inputs only) are both computed; the smaller wins, with ties going to
+/// the lower codec id; the winner is used only when strictly smaller than
+/// the raw input, else raw (0). Parsers reject compressed posts whose
+/// encoded length is not smaller than raw.
 pub fn encode_best(packed: &[u8]) -> (u8, Vec<u8>) {
-    let compressed = packbits_encode(packed);
-    if compressed.len() < packed.len() {
-        (CODEC_PACKBITS_MONO1, compressed)
+    let packbits = packbits_encode(packed);
+    let (codec, best) = if packed.len() % ROWDELTA_ROW_BYTES == 0 {
+        let rowdelta = packbits_encode(&row_delta_filter(packed));
+        if rowdelta.len() < packbits.len() {
+            (CODEC_ROWDELTA_MONO1, rowdelta)
+        } else {
+            (CODEC_PACKBITS_MONO1, packbits)
+        }
     } else {
-        (CODEC_RAW_MONO1, packed.to_vec())
-    }
+        (CODEC_PACKBITS_MONO1, packbits)
+    };
+    if best.len() < packed.len() { (codec, best) } else { (CODEC_RAW_MONO1, packed.to_vec()) }
 }
 
 /// Decode `encoded` according to `codec`, requiring exactly `expected_len`
@@ -160,6 +201,16 @@ pub fn decode(codec: u8, encoded: &[u8], expected_len: usize) -> Result<Vec<u8>>
                 return Err(BaogramError::NoncanonicalLength);
             }
             packbits_decode(encoded, expected_len)
+        }
+        CODEC_ROWDELTA_MONO1 => {
+            if encoded.len() >= expected_len {
+                return Err(BaogramError::NoncanonicalLength);
+            }
+            // the filter is defined only for whole rows
+            if expected_len % ROWDELTA_ROW_BYTES != 0 {
+                return Err(BaogramError::NoncanonicalLength);
+            }
+            Ok(row_delta_unfilter(&packbits_decode(encoded, expected_len)?))
         }
         _ => Err(BaogramError::UnknownCodec),
     }
@@ -225,10 +276,81 @@ mod tests {
         let n = roundtrip(&img);
         // alternating single bytes never form runs >= 3: worst case literals
         assert!(n > MONO1_PACKED_LEN, "alternating bytes should not compress, got {}", n);
-        // and encode_best must therefore fall back to raw
+        // but every row is identical, so the row-delta filter zeroes rows
+        // 1..240 and the image compresses extremely well under codec 2
         let (codec, enc) = encode_best(&img);
-        assert_eq!(codec, CODEC_RAW_MONO1);
-        assert_eq!(enc.len(), MONO1_PACKED_LEN);
+        assert_eq!(codec, CODEC_ROWDELTA_MONO1);
+        // row 0 stays an incompressible 33-byte literal; rows 1..240 are
+        // 7,648 zero bytes -> 60 run blocks
+        assert!(enc.len() < 200, "delta-filtered vertical bands should be tiny, got {}", enc.len());
+        assert_eq!(decode(codec, &enc, MONO1_PACKED_LEN).unwrap(), img);
+    }
+
+    #[test]
+    fn row_delta_filter_roundtrip() {
+        // adversarial patterns: solid, alternating rows, alternating columns,
+        // noise — the filter must invert exactly on all of them
+        let patterns: Vec<Vec<u8>> = vec![
+            vec![0x00; MONO1_PACKED_LEN],
+            vec![0xff; MONO1_PACKED_LEN],
+            (0..MONO1_PACKED_LEN).map(|i| if (i / 32) % 2 == 0 { 0xff } else { 0x00 }).collect(),
+            (0..MONO1_PACKED_LEN).map(|i| if i % 2 == 0 { 0xaa } else { 0x55 }).collect(),
+            {
+                let mut state = 0x1234_5678u32;
+                (0..MONO1_PACKED_LEN)
+                    .map(|_| {
+                        state ^= state << 13;
+                        state ^= state >> 17;
+                        state ^= state << 5;
+                        (state & 0xff) as u8
+                    })
+                    .collect()
+            },
+        ];
+        for p in &patterns {
+            assert_eq!(row_delta_unfilter(&row_delta_filter(p)), *p);
+        }
+        // filter definition spot-check: row1 of the filtered output is
+        // input_row1 ^ input_row0, computed from ORIGINAL rows
+        let mut img = vec![0u8; MONO1_PACKED_LEN];
+        img[0..32].fill(0b1010_0000);
+        img[32..64].fill(0b0110_0000);
+        img[64..96].fill(0b0011_0000);
+        let f = row_delta_filter(&img);
+        assert_eq!(&f[0..32], &img[0..32]);
+        assert!(f[32..64].iter().all(|&b| b == 0b1100_0000));
+        assert!(f[64..96].iter().all(|&b| b == 0b0101_0000));
+    }
+
+    #[test]
+    fn rowdelta_ties_go_to_packbits() {
+        // solid rows with a per-row pseudo-random byte: PackBits sees one run
+        // per row either way (delta rows are also solid), so the encodings tie
+        // and the lower codec id must win
+        let mut state = 0x0bad_cafeu32;
+        let mut img = Vec::with_capacity(MONO1_PACKED_LEN);
+        for _ in 0..240 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            img.extend_from_slice(&[(state & 0xff) as u8; 32]);
+        }
+        let (codec, _) = encode_best(&img);
+        assert_eq!(codec, CODEC_PACKBITS_MONO1);
+    }
+
+    #[test]
+    fn rowdelta_noncanonical_rejected() {
+        // encoded length not smaller than raw
+        assert_eq!(
+            decode(CODEC_ROWDELTA_MONO1, &vec![0u8; MONO1_PACKED_LEN], MONO1_PACKED_LEN).unwrap_err(),
+            BaogramError::NoncanonicalLength
+        );
+        // expected length that is not whole rows
+        assert_eq!(
+            decode(CODEC_ROWDELTA_MONO1, &[254, 0], 33).unwrap_err(),
+            BaogramError::NoncanonicalLength
+        );
     }
 
     #[test]
