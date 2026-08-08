@@ -18,6 +18,28 @@ use std::sync::{Arc, Mutex};
 
 use baogram_core::post::Post;
 
+/// Whether a picture uploaded over serial (the `image` console command)
+/// should be staged as a post when the badge is in `mode`.
+///
+/// True only inside Baogram, on a screen that is not busy. Notably **false**
+/// on the idle/conference screens: there the upload is the *avatar* — the
+/// bitmap that alternates with the DC logo — and someone using that
+/// original workflow did not ask to be dropped into a post preview. Also
+/// false mid-capture, mid-share, mid-receive, and while a post is already
+/// on the preview screen awaiting a decision.
+pub fn upload_stageable(mode: crate::VaultMode) -> bool {
+    use crate::VaultMode::*;
+    match mode {
+        Launcher | BaogramFeed | BaogramProfile => true,
+        // busy: bao-video owns the display, or a share loop is running
+        BaogramCamera | BaogramReceive | BaogramShare { .. } => false,
+        // already deciding about a post
+        BaogramPreview | BaogramPostMenu => false,
+        // the vault side, where an upload means "set my avatar"
+        _ => false,
+    }
+}
+
 /// PDDB dictionary holding all Baogram state.
 pub const BAOGRAM_DICT: &str = "baogram";
 /// Key: identity record (seed, public key, sequence counter, handle).
@@ -83,3 +105,61 @@ pub struct BaogramShared {
 }
 
 pub type Shared = Arc<Mutex<BaogramShared>>;
+
+#[cfg(test)]
+mod tests {
+    use crate::VaultMode::*;
+
+    use super::upload_stageable;
+
+    /// Every mode, stated explicitly. A new VaultMode variant makes this
+    /// list incomplete rather than silently inheriting a default.
+    #[test]
+    fn upload_stages_only_inside_baogram() {
+        let allowed = [Launcher, BaogramFeed, BaogramProfile];
+        let refused = [
+            // the vault side: an upload here means "set my avatar"
+            Idle,
+            IdleDevMode,
+            ShowKey { quantum: 0 },
+            ResponseGene { quantum: 0 },
+            ConfirmGene,
+            GeneScan,
+            FactoryTest,
+            StandAloneTest,
+            Tour,
+            TokenTour,
+            DefconHelp,
+            About,
+            Totp,
+            Password,
+            TokenHelp,
+            // busy, or already deciding about a post
+            BaogramCamera,
+            BaogramPreview,
+            BaogramPostMenu,
+            BaogramShare { quantum: 0 },
+            BaogramReceive,
+        ];
+        for m in allowed {
+            assert!(upload_stageable(m), "{:?} should stage an upload", m);
+        }
+        for m in refused {
+            assert!(!upload_stageable(m), "{:?} must not stage an upload", m);
+        }
+        assert_eq!(
+            allowed.len() + refused.len(),
+            23,
+            "VaultMode gained or lost a variant - decide what it does with an upload"
+        );
+    }
+
+    /// The idle/conference screens are the specific regression this guards:
+    /// uploading an avatar there must not hijack the display.
+    #[test]
+    fn conference_screens_never_hijacked_by_an_upload() {
+        assert!(!upload_stageable(Idle));
+        assert!(!upload_stageable(IdleDevMode));
+        assert!(!upload_stageable(ConfirmGene));
+    }
+}

@@ -1330,20 +1330,17 @@ fn main() -> ! {
 
                         // A freshly uploaded picture also becomes a Baogram
                         // post: convert it to the same small format every
-                        // other post uses and stage it for review. Only done
-                        // from an idle-ish mode — an upload must not yank the
-                        // display away from a capture, share or receive in
-                        // progress, and must not clobber a pending post.
+                        // other post uses and stage it for review.
+                        //
+                        // Only from inside Baogram. The idle/conference
+                        // screens are excluded on purpose: there the upload
+                        // is the *avatar* — the bitmap that alternates with
+                        // the DC logo — and someone using that original
+                        // workflow did not ask to be dropped into a post
+                        // preview. Also skipped mid-capture, mid-share and
+                        // mid-receive, and never clobbers a pending post.
                         let mode_now = *mode.lock().unwrap();
-                        let stageable = matches!(
-                            mode_now,
-                            VaultMode::Idle
-                                | VaultMode::IdleDevMode
-                                | VaultMode::Launcher
-                                | VaultMode::BaogramFeed
-                                | VaultMode::BaogramProfile
-                        );
-                        if stageable {
+                        if baogram::upload_stageable(mode_now) {
                             let image = baogram::render::display_bitmap_to_small(&bits);
                             if baogram::controller::set_pending_import(&baogram, image) {
                                 *mode.lock().unwrap() = VaultMode::BaogramPreview;

@@ -3,8 +3,9 @@
 #   1. baogram-core (canonical formats + golden vectors)
 #   2. bao-video still-camera helpers (chunk math + synthetic-frame SHA)
 #   3. Python peer + Rust/Python interop (pytest, regenerates the
-#      python vectors), then baogram-core again to close the loop.
-#   5. vault app unit tests (serial-upload bitmap -> post conversion)
+#      python vectors)
+#   4. baogram-core again, on those vectors, closing the Python->Rust loop
+#   5. vault app unit tests (upload conversion + which screens accept one)
 #
 # The emulator-driven import test needs a window; run it separately with
 # scripts/test-import-emulator.sh.

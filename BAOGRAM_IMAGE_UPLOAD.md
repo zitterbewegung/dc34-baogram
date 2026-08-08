@@ -30,12 +30,22 @@ each session rather than hard-coding it.
 
 ## 3. Get to a screen that can accept the upload
 
-An upload is only staged as a post when the badge is somewhere calm: the
-Baogram **feed**, the **profile** screen, the **launcher**, or the idle
-screen. It is deliberately ignored while the camera, a QR share, or a QR
-receive is running — an upload must never yank the display out from under
-something in progress — and it will not clobber a post already waiting for
-your decision.
+An upload only becomes a post when the badge is inside Baogram and idle:
+the **feed**, the **profile** screen, or the **launcher**.
+
+Everywhere else the upload still lands — it sets your badge's avatar
+bitmap, the picture that alternates with the DC logo on the conference
+screen, exactly as it always has — but the badge stays where it is. That
+is deliberate:
+
+* **On the idle / conference screens** the upload *is* the avatar, and
+  someone using that workflow did not ask to be dropped into a post
+  preview.
+* **Mid-camera, mid-share, mid-receive** an upload must never yank the
+  display out from under work in progress.
+* **With a post already awaiting your decision** it will not clobber it.
+
+So if you want the picture as a post, get to the Baogram feed first.
 
 ## 4. Send the picture
 
@@ -99,6 +109,8 @@ saved — remove those from the post menu on the badge.
 
 ## If nothing appears on screen
 
+* **The badge was not in Baogram.** From the idle/conference screen the
+  upload only sets your avatar. Open Baogram, then send again.
 * **The badge was busy.** Back out to the feed and send again.
 * **A post was already waiting for review.** Press 🔥 or ← to deal with
   it, then send again.
