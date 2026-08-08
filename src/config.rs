@@ -281,6 +281,7 @@ impl GlobalConfig {
                 VaultMode::BaogramShare { quantum: _ } => (true, LONG_TIMEOUT),
                 VaultMode::BaogramReceive => (true, LONG_TIMEOUT),
                 VaultMode::BaogramProfile => (true, MEDIUM_TIMEOUT),
+                VaultMode::Launcher => (true, MEDIUM_TIMEOUT),
             };
             self.power_manager_config(enable, Some(duration_sec));
         }

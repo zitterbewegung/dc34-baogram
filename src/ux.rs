@@ -40,6 +40,10 @@ const LOWBATT_TIMEOUT_S: u64 = 90;
 #[cfg(feature = "uber")]
 const LOWBATT_TIMEOUT_S: u64 = 180;
 
+/// Entries in the app launcher, in display order. `VaultUi::launcher_open_selected`
+/// dispatches on the index, so keep the two in sync.
+const LAUNCHER_ENTRIES: [&'static str; 5] = ["Baogram", "Vault", "Badge tour", "Help", "About"];
+
 pub const DEFAULT_FONT: GlyphStyle = GlyphStyle::Regular;
 pub const FONT_LIST: [&'static str; 6] = ["regular", "tall", "mono", "bold", "large", "small"];
 pub fn name_to_style(name: &str) -> Option<GlyphStyle> {
@@ -542,6 +546,8 @@ pub struct VaultUi {
 
     // Baogram shared state (feed, pending post, share loop)
     baogram: Option<crate::baogram::Shared>,
+    /// cursor position in the app launcher
+    launcher_sel: usize,
 }
 
 impl VaultUi {
@@ -620,12 +626,15 @@ impl VaultUi {
             last_mode: VaultMode::FactoryTest,
             bio_loaded: false,
             baogram: None,
+            launcher_sel: 0,
         }
     }
 
     pub fn set_baogram(&mut self, baogram: crate::baogram::Shared) { self.baogram = Some(baogram); }
 
     pub fn reset_help_state(&mut self) { self.help_state = HelpState::BadgeRecap { seen_press: false }; }
+
+    pub fn reset_tour_state(&mut self) { self.tour_state = TourState::Welcome { seen_press: false }; }
 
     pub fn reset_about_state(&mut self) { self.about_state = AboutState::Bunnie { seen_press: false }; }
 
@@ -1479,6 +1488,9 @@ impl VaultUi {
             }
             VaultMode::BaogramProfile => {
                 self.baogram_draw_profile();
+            }
+            VaultMode::Launcher => {
+                self.draw_launcher();
             } // _ => unimplemented!(),
         }
         self.gfx.flush().ok();
@@ -1683,6 +1695,79 @@ impl VaultUi {
         )
         .ok();
         self.gfx.draw_textview(&mut tv).ok();
+    }
+
+    fn draw_launcher(&mut self) {
+        self.clear_area();
+        let mut title = TextView::new(
+            Gid::dummy(),
+            TextBounds::CenteredTop(Rectangle::new(Point::new(0, 4), Point::new(127, 22))),
+        );
+        title.style = GlyphStyle::Bold;
+        title.draw_border = false;
+        write!(title, "Baochip apps").ok();
+        self.gfx.draw_textview(&mut title).ok();
+
+        const LIST_TOP: isize = 26;
+        const ROW_HEIGHT: isize = 17;
+        for (i, entry) in LAUNCHER_ENTRIES.iter().enumerate() {
+            let y = LIST_TOP + (i as isize) * ROW_HEIGHT;
+            if i == self.launcher_sel {
+                let mut cursor =
+                    TextView::new(Gid::dummy(), TextBounds::GrowableFromTl(Point::new(8, y), 20));
+                cursor.style = GlyphStyle::Regular;
+                cursor.draw_border = false;
+                write!(cursor, "→").ok();
+                self.gfx.draw_textview(&mut cursor).ok();
+            }
+            let mut tv = TextView::new(Gid::dummy(), TextBounds::GrowableFromTl(Point::new(28, y), 99));
+            tv.style = GlyphStyle::Regular;
+            tv.draw_border = false;
+            write!(tv, "{}", entry).ok();
+            self.gfx.draw_textview(&mut tv).ok();
+        }
+
+        self.baogram_label("↑↓ pick  ∴ open  ← feed");
+    }
+
+    /// Refresh the feed from the PDDB and enter it - the same pattern as the
+    /// `VaultOp::BaogramEnter` handler in the main loop.
+    fn enter_baogram_feed(&mut self) {
+        if let Some(bg) = self.baogram.clone() {
+            let mut s = bg.lock().unwrap();
+            s.feed.refresh(&self.pddb.borrow());
+            s.feed_cache = None;
+        }
+        *self.mode.lock().unwrap() = VaultMode::BaogramFeed;
+    }
+
+    /// Open the launcher entry under the cursor. Indices track
+    /// `LAUNCHER_ENTRIES`; the handle_key tail stores the target mode's
+    /// animate flag and redraws.
+    fn launcher_open_selected(&mut self) {
+        match self.launcher_sel {
+            // Baogram
+            0 => self.enter_baogram_feed(),
+            // Vault (redraw() promotes Idle to IdleDevMode for developers)
+            1 => *self.mode.lock().unwrap() = VaultMode::Idle,
+            // Badge tour: restart from the first slide - the state machine
+            // parks in a terminal state once a tour has run to the end
+            2 => {
+                self.reset_tour_state();
+                *self.mode.lock().unwrap() = VaultMode::Tour;
+            }
+            // Help
+            3 => {
+                self.reset_help_state();
+                *self.mode.lock().unwrap() = VaultMode::DefconHelp;
+            }
+            // About
+            4 => {
+                self.reset_about_state();
+                *self.mode.lock().unwrap() = VaultMode::About;
+            }
+            _ => (),
+        }
     }
 
     /// Returns `true` if in longpress state. Only call this once per key hit input.
@@ -1998,6 +2083,35 @@ impl VaultUi {
                     *self.mode.lock().unwrap() = VaultMode::BaogramFeed;
                     Some(k)
                 }
+            },
+            VaultMode::Launcher => match k {
+                '↑' => {
+                    self.launcher_sel =
+                        self.launcher_sel.checked_sub(1).unwrap_or(LAUNCHER_ENTRIES.len() - 1);
+                    None
+                }
+                '↓' => {
+                    self.launcher_sel = (self.launcher_sel + 1) % LAUNCHER_ENTRIES.len();
+                    None
+                }
+                // ∴ selects, as in the menus; → and 🔥 open too. All three are
+                // consumed so the main loop can't raise a menu or start a QR
+                // scan over the launcher.
+                '∴' | '→' | '🔥' => {
+                    self.launcher_open_selected();
+                    if k == '∴' {
+                        // the handle_key tail deliberately skips redraws for '∴'
+                        self.redraw();
+                    }
+                    None
+                }
+                // ← backs out to the Baogram feed (the badge's primary app)
+                '←' => {
+                    self.enter_baogram_feed();
+                    None
+                }
+                // sensor/RTC events and anything unmapped go to the main loop
+                _ => Some(k),
             },
             // catch-all for now
             _ => Some(k),

@@ -83,6 +83,8 @@ pub(crate) enum VaultOp {
     BaogramRxDone,
     /// Baogram post menu: show the About screen (what the app does + keys).
     BaogramAboutOp,
+    /// Enter the app launcher (from the idle menu, or on leaving Baogram).
+    LauncherEnter,
 
     // monkey patch for last-minute custom image feature - discriminant is hard-coded into dc34-console
     ImageLoad = 1024,

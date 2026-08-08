@@ -90,6 +90,8 @@ pub enum VaultMode {
     BaogramReceive,
     /// Identity summary screen.
     BaogramProfile,
+    /// Full-screen app launcher (Baogram / vault / tour / help / about).
+    Launcher,
 }
 
 impl VaultMode {
@@ -118,6 +120,7 @@ impl VaultMode {
             VaultMode::BaogramShare { quantum: _ } => true,
             VaultMode::BaogramReceive => false,
             VaultMode::BaogramProfile => false,
+            VaultMode::Launcher => false,
         }
     }
 }
@@ -1274,8 +1277,13 @@ fn main() -> ! {
                 vault_ui.redraw();
             }
             Some(VaultOp::BaogramExitOp) => {
-                *mode.lock().unwrap() = VaultMode::Idle;
-                animate.store(true, Ordering::SeqCst);
+                *mode.lock().unwrap() = VaultMode::Launcher;
+                animate.store(false, Ordering::SeqCst);
+                vault_ui.redraw();
+            }
+            Some(VaultOp::LauncherEnter) => {
+                *mode.lock().unwrap() = VaultMode::Launcher;
+                animate.store(false, Ordering::SeqCst);
                 vault_ui.redraw();
             }
             Some(VaultOp::BaogramRxDone) => xous::msg_scalar_unpack!(msg, code, _, _, _, {
